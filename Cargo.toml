@@ -7,3 +7,4 @@ edition = "2018"
 [dependencies]
 regex = "1"
 lazy_static = "1"
+goblin = "0.0.22" # ELF parsing
