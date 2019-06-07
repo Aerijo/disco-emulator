@@ -34,12 +34,12 @@ enum Instruction {
 
 
 impl Instruction {
-    fn from_word (word: u32) -> Instruction {
+    fn from (word: u32) -> (Instruction, bool) {
         let length_check = word >> 29;
         return if length_check == 0b111 && (word >> 27 != 0b11100) {
-            Instruction::get_wide_instruction(word)
+            (Instruction::get_wide_instruction(word), true)
         } else {
-            Instruction::get_narrow_instruction((word >> 16) as u16)
+            (Instruction::get_narrow_instruction((word >> 16) as u16), false)
         }
     }
 
@@ -243,7 +243,7 @@ impl MemoryBus {
     }
 
     fn get_word (&self, address: u32) -> Result<u32, &str> {
-        if 0x08000000 <= address && address <= 0x08000000 + (self.flash.len() as u32) {
+        if 0x08000000 <= address && address <= 0x08000000 + (self.flash.len() as u32 - 4) {
             let base = (address - 0x08000000) as usize;
             let b1 = self.flash[base] as u32;
             let b2 = self.flash[base + 1] as u32;
@@ -279,7 +279,7 @@ impl Board {
 
     fn next_instruction (&mut self, update_pc: bool) -> Result<Instruction, &str> {
         let pc = self.read_pc().0;
-        if update_pc { self.inc_pc() };
+        if update_pc { self.cpu.registers[15] += Wrapping(2); };
 
         let val = match self.memory.get_word(pc) {
             Ok(v) => v,
@@ -288,8 +288,14 @@ impl Board {
 
         println!("{:08X}", val);
 
+        let (instr, wide) = Instruction::from(val);
 
-        return Err("failed");
+        println!("{:?} is wide: {}", instr, wide);
+        if update_pc && wide {
+            self.cpu.registers[15] += Wrapping(2);
+        }
+
+        return Ok(instr);
     }
 
     fn load_elf_from_path (&mut self, path: &str) -> Result<(), String> {
@@ -379,7 +385,7 @@ impl Board {
     }
 
     fn inc_pc (&mut self) {
-        self.cpu.registers[15] += Wrapping(1);
+        self.cpu.registers[15] += Wrapping(2);
     }
 
     fn dec_pc (&mut self) {
@@ -762,9 +768,11 @@ fn main () {
         }
     };
 
-    match board.next_instruction(false) {
+    print!("\n{}\n> ", board);
+
+    match board.next_instruction(true) {
         Ok(i) => println!("Ok: {:?}", i),
-        Err(e) => println!("Err: {:?}", e),
+        Err(e) => println!("Err: {}", e),
     };
 
     loop {
