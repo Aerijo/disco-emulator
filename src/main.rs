@@ -5,6 +5,10 @@ extern crate lazy_static;
 extern crate regex;
 extern crate goblin;
 
+mod instruction;
+
+use instruction::{Instruction, RegFormat};
+
 use std::num::Wrapping;
 use std::option::Option;
 use std::vec::Vec;
@@ -16,51 +20,7 @@ use std::fs;
 use goblin::elf::{Elf};
 
 
-#[derive(Debug)]
-enum Instruction {
-    MovImm { to: usize, val: u32, flags: bool },
-    MovReg { to: usize, from: usize, flags: bool },
-    AddImm { dest: usize, first: usize, val: u32, flags: bool },
-    AddReg { dest: usize, first: usize, second: usize, flags: bool },
-    SubImm { dest: usize, first: usize, val: u32, flags: bool },
-    SubReg { dest: usize, first: usize, second: usize, flags: bool },
-    LdrReg { dest: usize, address: usize, flags: bool },
-    StrReg { val: usize, address: usize },
-    Undo { num: usize },
-    Redo { num: usize },
-    Format { reg: usize, kind: RegFormat },
-    Memview { index: usize, length: usize },
-}
 
-
-impl Instruction {
-    fn from (word: u32) -> (Instruction, bool) {
-        let length_check = word >> 29;
-        return if length_check == 0b111 && (word >> 27 != 0b11100) {
-            (Instruction::get_wide_instruction(word), true)
-        } else {
-            (Instruction::get_narrow_instruction((word >> 16) as u16), false)
-        }
-    }
-
-    fn get_wide_instruction (_word: u32) -> Instruction {
-        return Instruction::Undo { num: 1 };
-    }
-
-    fn get_narrow_instruction (_hword: u16) -> Instruction {
-        return Instruction::Undo { num: 1 };
-    }
-}
-
-
-#[derive(Copy, Clone, Debug)]
-enum RegFormat {
-    Bin, // binary
-    Oct, // octal
-    Dec, // unsigned decimal
-    Sig, // signed decimal
-    Hex, // hexadecimal
-}
 
 
 #[derive(Debug)]
@@ -802,6 +762,9 @@ fn main () {
             Instruction::Redo { num } => { board.redo(num); },
             Instruction::Format { reg, kind } => { board.set_display_format(reg, kind); },
             Instruction::Memview { index, length } => { board.print_mem_dump(index, length); },
+            Instruction::Undefined => {
+                println!("Undefined instruction");
+            }
         }
     }
 }
