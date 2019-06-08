@@ -63,15 +63,10 @@ struct CPU {
 
 impl CPU {
     fn new () -> CPU {
-        let mut cpu = CPU {
+        return CPU {
             registers: [Wrapping(0); 16],
             flags: Flags { n: false, z: true, c: true, v: false, q: false, },
         };
-
-        cpu.set_reg(13, Wrapping(0x20018000));
-        cpu.set_reg(15, Wrapping(0x080001C8));
-
-        return cpu;
     }
 
     fn read_reg (&self, reg: usize) -> Wrapping<u32> {
@@ -202,7 +197,7 @@ impl MemoryBus {
         print!("\n");
     }
 
-    fn get_word (&self, address: u32) -> Result<u32, &str> {
+    fn get_instr_word (&self, address: u32) -> Result<u32, &str> {
         if 0x08000000 <= address && address <= 0x08000000 + (self.flash.len() as u32 - 4) {
             let base = (address - 0x08000000) as usize;
             let b1 = self.flash[base] as u32;
@@ -210,6 +205,19 @@ impl MemoryBus {
             let b3 = self.flash[base + 2] as u32;
             let b4 = self.flash[base + 3] as u32;
             return Ok((b2 << 24) + (b1 << 16) + (b4 << 8) + b3);
+        }
+
+        return Err("Out of bounds access");
+    }
+
+    fn get_word (&self, address: u32) -> Result<u32, &str> {
+        if 0x08000000 <= address && address <= 0x08000000 + (self.flash.len() as u32 - 4) {
+            let base = (address - 0x08000000) as usize;
+            let b1 = self.flash[base] as u32;
+            let b2 = self.flash[base + 1] as u32;
+            let b3 = self.flash[base + 2] as u32;
+            let b4 = self.flash[base + 3] as u32;
+            return Ok((b4 << 24) + (b3 << 16) + (b2 << 8) + b1);
         }
 
         return Err("Out of bounds access");
@@ -241,7 +249,7 @@ impl Board {
         let pc = self.read_pc().0;
         if update_pc { self.cpu.registers[15] += Wrapping(2); };
 
-        let val = match self.memory.get_word(pc) {
+        let val = match self.memory.get_instr_word(pc) {
             Ok(v) => v,
             Err(e) => return Err(e),
         };
@@ -256,6 +264,13 @@ impl Board {
         }
 
         return Ok(instr);
+    }
+
+    fn execute (&mut self, instr: Instruction) {
+        match instr {
+            Instruction::LdrLit { rt, offset, add } => self.ldr_lit(rt, offset, add),
+            _ => println!("Unhandled instruction")
+        }
     }
 
     fn load_elf_from_path (&mut self, path: &str) -> Result<(), String> {
@@ -496,6 +511,20 @@ impl Board {
         source_val = source_val >> 8;
         self.memory.data[pointer + 3] = source_val as u8;
     }
+
+    fn ldr_lit (&mut self, dest: usize, offset: u16, add: bool) {
+        let offset = offset as u32;
+        let pc = self.read_pc().0;
+
+        let address = if add {
+            pc + offset
+        } else {
+            pc - offset
+        };
+
+        let val = self.memory.get_word(address).unwrap();
+        self.set_reg(dest, Wrapping(val));
+    }
 }
 
 
@@ -606,7 +635,7 @@ fn parse_input (input: String) -> Option<Instruction> {
         },
         "undo" => { return Some(Instruction::Undo { num: 1 }) },
         "redo" => { return Some(Instruction::Redo { num: 1 }) },
-        "ldr" | "ldrs" => {
+        "ldr" => {
             if args.len() != 2 { return None };
 
             let dest = get_register(args[0].clone());
@@ -614,7 +643,7 @@ fn parse_input (input: String) -> Option<Instruction> {
 
             let address = get_register(args[1].clone());
             if address.is_none() { return None };
-            return Some(Instruction::LdrReg { dest: dest.unwrap(), address: address.unwrap(), flags: instr == "ldrs" })
+            return Some(Instruction::LdrImm { rn: address.unwrap(), rt: dest.unwrap(), offset: 0, add: false, index: false, wback: false })
         },
         "str" => {
             if args.len() != 2 { return None };
@@ -731,7 +760,10 @@ fn main () {
     print!("\n{}\n> ", board);
 
     match board.next_instruction(true) {
-        Ok(i) => println!("Ok: {:?}", i),
+        Ok(i) => {
+            println!("Ok: {:?}", i);
+            board.execute(i);
+        }
         Err(e) => println!("Err: {}", e),
     };
 
@@ -749,22 +781,22 @@ fn main () {
             continue;
         }
 
-        match instruction.unwrap() {
-            Instruction::MovImm { to, val, flags } => { board.mov_imm(to, val, flags); },
-            Instruction::MovReg { to, from, flags } => { board.mov_reg(to, from, flags); },
-            Instruction::AddImm { dest, first, val, flags } => { board.add_imm(dest, first, val, flags); },
-            Instruction::AddReg { dest, first, second, flags } => { board.add_reg(dest, first, second, flags); },
-            Instruction::SubImm { dest, first, val, flags } => { board.sub_imm(dest, first, val, flags); },
-            Instruction::SubReg { dest, first, second, flags } => { board.sub_reg(dest, first, second, flags); },
-            Instruction::LdrReg { dest, address, flags } => { board.ldr_reg(dest, address, flags); },
-            Instruction::StrReg { val, address } => { board.str_reg(val, address); },
-            Instruction::Undo { num } => { board.undo(num); },
-            Instruction::Redo { num } => { board.redo(num); },
-            Instruction::Format { reg, kind } => { board.set_display_format(reg, kind); },
-            Instruction::Memview { index, length } => { board.print_mem_dump(index, length); },
-            Instruction::Undefined => {
-                println!("Undefined instruction");
-            }
-        }
+        // match instruction.unwrap() {
+        //     Instruction::MovImm { to, val, flags } => { board.mov_imm(to, val, flags); },
+        //     Instruction::MovReg { to, from, flags } => { board.mov_reg(to, from, flags); },
+        //     Instruction::AddImm { dest, first, val, flags } => { board.add_imm(dest, first, val, flags); },
+        //     Instruction::AddReg { dest, first, second, flags } => { board.add_reg(dest, first, second, flags); },
+        //     Instruction::SubImm { dest, first, val, flags } => { board.sub_imm(dest, first, val, flags); },
+        //     Instruction::SubReg { dest, first, second, flags } => { board.sub_reg(dest, first, second, flags); },
+        //     Instruction::LdrReg { dest, address, flags } => { board.ldr_reg(dest, address, flags); },
+        //     Instruction::StrReg { val, address } => { board.str_reg(val, address); },
+        //     Instruction::Undo { num } => { board.undo(num); },
+        //     Instruction::Redo { num } => { board.redo(num); },
+        //     Instruction::Format { reg, kind } => { board.set_display_format(reg, kind); },
+        //     Instruction::Memview { index, length } => { board.print_mem_dump(index, length); },
+        //     Instruction::Undefined => {
+        //         println!("Undefined instruction");
+        //     }
+        // }
     }
 }
