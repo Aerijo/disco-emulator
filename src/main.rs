@@ -1,13 +1,15 @@
 #![allow(dead_code)]
+#![allow(unused_imports)]
 
 #[macro_use]
 extern crate lazy_static;
 extern crate regex;
 extern crate goblin;
 
+
 mod instruction;
 
-use instruction::{Instruction, RegFormat};
+use instruction::{Instruction, RegFormat, Condition};
 
 use std::num::Wrapping;
 use std::option::Option;
@@ -15,12 +17,10 @@ use std::vec::Vec;
 use std::string::String;
 use std::fmt;
 use std::io::{self, Write};
-use regex::Regex;
 use std::fs;
+use std::collections::HashMap;
+use regex::Regex;
 use goblin::elf::{Elf};
-
-
-
 
 
 #[derive(Debug)]
@@ -64,7 +64,7 @@ struct CPU {
 impl CPU {
     fn new () -> CPU {
         return CPU {
-            registers: [Wrapping(0); 16],
+            registers: [Wrapping(0xABCD1234); 16],
             flags: Flags { n: false, z: true, c: true, v: false, q: false, },
         };
     }
@@ -96,8 +96,24 @@ impl CPU {
         self.flags.v = (((v1.0 & v2.0 & !result.0) | (!v1.0 & !v2.0 & result.0)) & (1 << 31)) > 0;
     }
 
-    fn step (&mut self) {
-
+    fn check_condition (&self, cond: Condition) -> bool {
+        return match cond {
+            Condition::Equal => self.flags.z,
+            Condition::NotEqual => !self.flags.z,
+            Condition::CarrySet => self.flags.c,
+            Condition::CarryClear => !self.flags.c,
+            Condition::Negative => self.flags.n,
+            Condition::PosOrZero => self.flags.n,
+            Condition::Overflow => self.flags.v,
+            Condition::NotOverflow => !self.flags.v,
+            Condition::UHigher => self.flags.c && !self.flags.z,
+            Condition::ULowerSame => !self.flags.c || self.flags.z,
+            Condition::SHigherSame => self.flags.n == self.flags.v,
+            Condition::Slower => self.flags.n != self.flags.v,
+            Condition::SHigher => !self.flags.z && (self.flags.n == self.flags.v),
+            Condition::SLowerSame =>  self.flags.z || (self.flags.n != self.flags.v),
+            Condition::Always => true,
+        }
     }
 }
 
@@ -147,7 +163,7 @@ impl MemoryBus {
     fn new () -> MemoryBus {
         return MemoryBus {
             flash: [0xFF; 1024 * 1024 + 4],
-            data: [0xFF; 128 * 1024]
+            data: [0xFF; 128 * 1024],
         }
     }
 
@@ -166,14 +182,9 @@ impl MemoryBus {
                 return Err(String::from("Flash too large"));
             }
 
-            println!("{:#?}", header);
-
             for i in 0..size {
                 self.flash[i] = bytes[i + offset];
-                print!("{:02X} ", self.flash[i]);
             }
-            print!("showing {} bytes\n", size);
-
         }
         return Ok(());
     }
@@ -210,17 +221,42 @@ impl MemoryBus {
         return Err("Out of bounds access");
     }
 
+    fn get_flash_capacity (&self) -> u32 {
+        return self.flash.len() as u32 - 4;
+    }
+
+    fn get_data_capacity (&self) -> u32 {
+        return self.data.len() as u32;
+    }
+
     fn get_word (&self, address: u32) -> Result<u32, &str> {
-        if 0x08000000 <= address && address <= 0x08000000 + (self.flash.len() as u32 - 4) {
-            let base = (address - 0x08000000) as usize;
+        if 0x0800_0000 <= address && address <= 0x0800_0000 + self.get_flash_capacity() - 4 {
+            let base = (address - 0x0800_0000) as usize;
             let b1 = self.flash[base] as u32;
             let b2 = self.flash[base + 1] as u32;
             let b3 = self.flash[base + 2] as u32;
             let b4 = self.flash[base + 3] as u32;
             return Ok((b4 << 24) + (b3 << 16) + (b2 << 8) + b1);
-        }
+        } else if 0x2000_0000 <= address && address <= 0x2000_0000 + self.get_data_capacity() - 4 {
+            let base = (address - 0x2000_0000) as usize;
+            let b1 = self.data[base] as u32;
+            let b2 = self.data[base + 1] as u32;
+            let b3 = self.data[base + 2] as u32;
+            let b4 = self.data[base + 3] as u32;
+            return Ok((b4 << 24) + (b3 << 16) + (b2 << 8) + b1);
+        } else {
+            return Err("Out of bounds access");
+        };
+    }
 
-        return Err("Out of bounds access");
+    fn write_word (&mut self, address: u32, val: u32) {
+        if 0x2000_0000 <= address && address <= 0x2000_0000 + self.get_data_capacity() - 4 {
+            let base = (address - 0x2000_0000) as usize;
+            self.data[base] = (val & 0xFF) as u8;
+            self.data[base + 1] = ((val >> 8) & 0xFF) as u8;
+            self.data[base + 2] = ((val >> 16) & 0xFF) as u8;
+            self.data[base + 3] = (val >> 24) as u8;
+        }
     }
 }
 
@@ -231,7 +267,7 @@ struct Board {
     memory: MemoryBus,
     command_stack: Vec<Transition>,
     register_formats: [RegFormat; 16],
-
+    branch_map: HashMap<u32, bool>,
 }
 
 
@@ -242,6 +278,7 @@ impl Board {
             memory: MemoryBus::new(),
             command_stack: Vec::new(),
             register_formats: [RegFormat::Hex; 16],
+            branch_map: HashMap::new(),
         }
     }
 
@@ -256,7 +293,7 @@ impl Board {
 
         println!("{:08X}", val);
 
-        let (instr, wide) = Instruction::from(val);
+        let (instr, wide) = Instruction::from(val, pc);
 
         println!("{:?} is wide: {}", instr, wide);
         if update_pc && wide {
@@ -268,7 +305,20 @@ impl Board {
 
     fn execute (&mut self, instr: Instruction) {
         match instr {
-            Instruction::LdrLit { rt, offset, add } => self.ldr_lit(rt, offset, add),
+            Instruction::LdrLit { rt, offset, add } => self.ldr_lit(rt as usize, offset, add),
+            Instruction::LdrImm { rn, rt, offset, add, index, wback } => self.ldr_imm(rt as usize, rn as usize, offset, index, add, wback),
+            Instruction::MovImm { rd, val, flags } => self.mov_imm(rd as usize, val, flags),
+            Instruction::AddReg { rd, rm, rn, flags } => self.add_reg(rd as usize, rm as usize, rn as usize, flags),
+            Instruction::Branch { offset } => self.branch(offset),
+            Instruction::LinkedBranch { offset } => self.branch_with_link(offset),
+            Instruction::CondBranch { offset, cond } => self.branch_cond(offset, cond),
+            Instruction::CmpReg { rm, rn } => self.cmp_reg(rm as usize, rn as usize),
+            Instruction::StrImm { rn, rt, offset, add, index, wback } => self.str_imm(rt as usize, rn as usize, offset, index, add, wback),
+            Instruction::Push { registers } => self.push(registers),
+            Instruction::AddSpImm { rd, val, flags } => self.add_sp_imm(rd as usize, val, flags),
+            Instruction::Undefined => {}
+            Instruction::Unpredictable => {}
+            Instruction::Unimplemented => {}
             _ => println!("Unhandled instruction")
         }
     }
@@ -287,6 +337,21 @@ impl Board {
                 return Err(format!("Failed to parse elf file \"{}\": {}", path, e));
             }
         };
+
+        for sym in elf.syms.iter() {
+            let offset = sym.st_name;
+            let name = match elf.strtab.get(offset) {
+                Some(Ok(s)) => s,
+                _ => return Err(String::from("missing symbols")),
+            };
+
+            if name == "SystemInit" || name == "__libc_init_array" {
+                let address = (sym.st_value & 0xFFFFFFFE) as u32;
+                self.branch_map.insert(address, false);
+            }
+        }
+
+        println!("bmap: {:#?}", self.branch_map);
 
         self.set_reg(15, Wrapping((elf.entry - 1) as u32)); // TODO: Work out why it points to 1 byte past start
 
@@ -381,8 +446,6 @@ impl Board {
 
     fn mov_imm (&mut self, dest: usize, val: u32, flags: bool) {
         assert!(dest <= 15);
-        self.inc_pc();
-        self.save_reg_state(dest);
 
         if flags {
             self.cpu.flags.n = (val as i32) < 0;
@@ -392,9 +455,42 @@ impl Board {
         self.set_reg(dest, Wrapping(val));
     }
 
+    fn branch (&mut self, offset: i32) {
+        self.cpu.registers[15] += Wrapping(offset as u32) + Wrapping(2); // TODO: Precisely determine proper PC value
+    }
+
+    fn branch_cond (&mut self, offset: i32, cond: Condition) {
+        if self.cpu.check_condition(cond) {
+            self.branch(offset);
+        }
+    }
+
+    fn branch_with_link (&mut self, offset: i32) {
+        let pc = self.read_pc();
+        let new_address = (pc + Wrapping(offset as u32)).0;
+
+
+        match self.branch_map.get(&new_address) {
+            Some(b) if !b => {
+                println!("Skipping branch with link");
+                return;
+            }
+            _ => {}
+        }
+
+        self.cpu.registers[14] = pc | Wrapping(0b1);
+        self.branch(offset - 2); // TODO: Proper PC align
+    }
+
+    fn cmp_reg (&mut self, rm: usize, rn: usize) {
+        assert!(rm <= 15 && rn <= 15);
+        let vm = self.read_reg(rm);
+        let vn = self.read_reg(rn);
+        self.cpu.set_flags_nzcv(vm, vn, vn - vm);
+    }
+
     fn mov_reg (&mut self, to: usize, from: usize, flags: bool) {
         assert!(to <= 15 && from <= 15);
-        self.inc_pc();
         self.save_reg_state(to);
 
         let val = self.read_reg(from);
@@ -407,8 +503,6 @@ impl Board {
 
     fn add_imm (&mut self, dest: usize, first: usize, val: u32, flags: bool) {
         assert!(dest <= 15 && first <= 15);
-        self.inc_pc();
-        self.save_reg_state(dest);
 
         let orig = self.read_reg(first);
         let result = orig + Wrapping(val);
@@ -420,25 +514,21 @@ impl Board {
         self.set_reg(dest, result);
     }
 
-    fn add_reg (&mut self, dest: usize, first: usize, second: usize, flags: bool) {
-        assert!(dest <= 15 && first <= 15 && second <= 15);
-        self.inc_pc();
-        self.save_reg_state(dest);
+    fn add_reg (&mut self, rd: usize, rm: usize, rn: usize, flags: bool) {
+        assert!(rd <= 15 && rm <= 15 && rn <= 15);
 
-        let v1 = self.read_reg(first);
-        let v2 = self.read_reg(second);
+        let v1 = self.read_reg(rm);
+        let v2 = self.read_reg(rn);
         let result = v1 + v2;
         if flags {
             self.set_flags_nzcv(v1, v2, result);
         }
 
-        self.set_reg(dest, result);
+        self.set_reg(rd, result);
     }
 
     fn sub_imm (&mut self, dest: usize, first: usize, val: u32, flags: bool) {
         assert!(dest <= 15 && first <= 15);
-        self.inc_pc();
-        self.save_reg_state(dest);
 
         let orig = self.read_reg(first);
         let result = orig - Wrapping(val);
@@ -452,8 +542,6 @@ impl Board {
 
     fn sub_reg (&mut self, dest: usize, first: usize, second: usize, flags: bool) {
         assert!(dest <= 15 && first <= 15 && second <= 15);
-        self.inc_pc();
-        self.save_reg_state(dest);
 
         let v1 = self.read_reg(first);
         let v2 = self.read_reg(second);
@@ -525,6 +613,81 @@ impl Board {
         let val = self.memory.get_word(address).unwrap();
         self.set_reg(dest, Wrapping(val));
     }
+
+    fn ldr_imm (&mut self, rt: usize, rn: usize, offset: u16, index: bool, add: bool, wback: bool) {
+        assert!(rt <= 15 && rn <= 15);
+        let offset = offset as u32;
+
+        let address = self.read_reg(rn);
+        let offset_address = if add {
+            address + Wrapping(offset)
+        } else {
+            address - Wrapping(offset)
+        };
+
+        let address = if index { offset_address } else { address };
+
+        let val = match self.memory.get_word(address.0) {
+            Ok(w) => w,
+            Err(_) => {
+                println!("Unhandled access");
+                return;
+            } // TODO: Return error
+        };
+
+        if wback {
+            self.set_reg(rn, offset_address);
+        }
+
+        self.set_reg(rt, Wrapping(val)); // TODO: Special case PC
+    }
+
+    fn str_imm (&mut self, source: usize, address_reg: usize, offset: u16, index: bool, add: bool, wback: bool) {
+        assert!(source <= 15 && address_reg <= 15);
+        let offset = offset as u32;
+
+        let source = self.read_reg(source).0;
+        let address = self.read_reg(address_reg).0;
+
+        let offset_address = if add {
+            address + offset
+        } else {
+            address - offset
+        };
+
+        let address = if index { offset_address } else { address };
+
+        self.memory.write_word(address, source);
+
+        if wback {
+            self.set_reg(address_reg, Wrapping(offset_address));
+        }
+    }
+
+    fn push (&mut self, registers: u16) {
+        let mut sp = self.cpu.registers[13];
+
+        for i in (0..16).rev() {
+            if (registers & (1 << i)) == 0 { continue; }
+            self.memory.write_word(sp.0, self.read_reg(i).0);
+            sp -= Wrapping(4);
+        }
+
+        self.cpu.registers[13] = sp;
+    }
+
+    fn add_sp_imm (&mut self, rd: usize, val: u32, flags: bool) {
+        assert!(rd <= 15);
+
+        let orig = self.read_reg(13);
+        let result = orig + Wrapping(val);
+
+        if flags {
+            self.set_flags_nzcv(Wrapping(val), orig, result);
+        }
+
+        self.set_reg(rd, result);
+    }
 }
 
 
@@ -594,154 +757,154 @@ fn get_number (val: String) -> Option<u32> {
 }
 
 
-fn parse_input (input: String) -> Option<Instruction> {
-    lazy_static! {
-        static ref INST_RE: Regex = Regex::new(r"^\s*([a-zA-Z0-9]+)\s+").unwrap();
-        static ref ARG_RE: Regex = Regex::new(r"[\s,]+").unwrap();
-        static ref NUM_RE: Regex = Regex::new(r"^\-?(?:0[box])?[[:xdigit:]]+$").unwrap();
-    }
-
-    if !INST_RE.is_match(&input) { return None };
-
-    let instr = INST_RE.captures(&input).unwrap().get(1).unwrap().as_str();
-    let args: Vec<String> = ARG_RE.split(input[instr.len()..input.len()].trim()).map(String::from).collect();
-
-    match instr {
-        "exit" => { std::process::exit(0); },
-        "format" => {
-            if args.len() != 2 { return None };
-            let reg = get_register(args[0].clone());
-            if reg.is_none() { return None };
-            let reg = reg.unwrap();
-
-            return match args[1].as_str() {
-                "b" => Some(Instruction::Format { reg, kind: RegFormat::Bin }),
-                "o" => Some(Instruction::Format { reg, kind: RegFormat::Oct }),
-                "d" => Some(Instruction::Format { reg, kind: RegFormat::Dec }),
-                "s" => Some(Instruction::Format { reg, kind: RegFormat::Sig }),
-                "h" => Some(Instruction::Format { reg, kind: RegFormat::Hex }),
-                _ => None,
-            }
-        },
-        "memview" => {
-            if args.len() != 2 { return None };
-            let index = get_number(args[0].clone());
-            let length = get_number(args[1].clone());
-            if index.is_none() || length.is_none() { return None };
-            let index = index.unwrap() as usize;
-            let length = length.unwrap() as usize;
-
-            return Some(Instruction::Memview { index, length })
-        },
-        "undo" => { return Some(Instruction::Undo { num: 1 }) },
-        "redo" => { return Some(Instruction::Redo { num: 1 }) },
-        "ldr" => {
-            if args.len() != 2 { return None };
-
-            let dest = get_register(args[0].clone());
-            if dest.is_none() { return None };
-
-            let address = get_register(args[1].clone());
-            if address.is_none() { return None };
-            return Some(Instruction::LdrImm { rn: address.unwrap(), rt: dest.unwrap(), offset: 0, add: false, index: false, wback: false })
-        },
-        "str" => {
-            if args.len() != 2 { return None };
-
-            let val = get_register(args[0].clone());
-            if val.is_none() { return None };
-
-            let address = get_register(args[1].clone());
-            if address.is_none() { return None };
-            return Some(Instruction::StrReg { val: val.unwrap(), address: address.unwrap() })
-        },
-        "mov" | "movs" => {
-            if args.len() != 2 { return None };
-
-            let to = get_register(args[0].clone());
-            if to.is_none() { return None };
-
-            if NUM_RE.is_match(&args[1]) {
-                let from = get_number(args[1].clone());
-                if from.is_none() { return None };
-                return Some(Instruction::MovImm { to: to.unwrap(), val: from.unwrap(), flags: instr == "movs" })
-            } else {
-                let from = get_register(args[1].clone());
-                if from.is_none() { return None };
-                return Some(Instruction::MovReg { to: to.unwrap(), from: from.unwrap(), flags: instr == "movs" })
-            }
-        },
-        "add" | "adds" => {
-            if args.len() < 2 { return None };
-
-            let dest = get_register(args[0].clone());
-            if dest.is_none() { return None }
-
-            if args.len() == 2 && NUM_RE.is_match(&args[1]) {
-                let val = get_number(args[1].clone());
-                if val.is_none() { return None }
-                return Some(Instruction::AddImm { dest: dest.unwrap(), first: dest.unwrap(), val: val.unwrap(), flags: instr == "adds" });
-            }
-
-            if args.len() == 2 {
-                let first = get_register(args[1].clone());
-                if first.is_none() { return None }
-                return Some(Instruction::AddReg { dest: dest.unwrap(), first: dest.unwrap(), second: first.unwrap(), flags: instr == "adds" });
-            }
-
-            if args.len() == 3 && NUM_RE.is_match(&args[2]) {
-                let first = get_register(args[1].clone());
-                let val = get_number(args[2].clone());
-                if first.is_none() || val.is_none() { return None }
-                return Some(Instruction::AddImm { dest: dest.unwrap(), first: first.unwrap(), val: val.unwrap(), flags: instr == "adds" });
-            }
-
-            if args.len() == 3 {
-                let first = get_register(args[1].clone());
-                let second = get_register(args[2].clone());
-                if first.is_none() || second.is_none() { return None }
-                return Some(Instruction::AddReg { dest: dest.unwrap(), first: first.unwrap(), second: second.unwrap(), flags: instr == "adds" });
-            }
-
-            return None;
-        },
-        "sub" | "subs" => {
-            if args.len() < 2 { return None };
-
-            let dest = get_register(args[0].clone());
-            if dest.is_none() { return None }
-
-            if args.len() == 2 && NUM_RE.is_match(&args[1]) {
-                let val = get_number(args[1].clone());
-                if val.is_none() { return None }
-                return Some(Instruction::SubImm { dest: dest.unwrap(), first: dest.unwrap(), val: val.unwrap(), flags: instr == "subs" });
-            }
-
-            if args.len() == 2 {
-                let first = get_register(args[1].clone());
-                if first.is_none() { return None }
-                return Some(Instruction::SubReg { dest: dest.unwrap(), first: dest.unwrap(), second: first.unwrap(), flags: instr == "subs" });
-            }
-
-            if args.len() == 3 && NUM_RE.is_match(&args[2]) {
-                let first = get_register(args[1].clone());
-                let val = get_number(args[2].clone());
-                if first.is_none() || val.is_none() { return None }
-                return Some(Instruction::SubImm { dest: dest.unwrap(), first: first.unwrap(), val: val.unwrap(), flags: instr == "subs" });
-            }
-
-            if args.len() == 3 {
-                let first = get_register(args[1].clone());
-                let second = get_register(args[2].clone());
-                if first.is_none() || second.is_none() { return None }
-                return Some(Instruction::SubReg { dest: dest.unwrap(), first: first.unwrap(), second: second.unwrap(), flags: instr == "subs" });
-            }
-
-            return None;
-        },
-        _ => return None,
-    }
-}
+// fn parse_input (input: String) -> Option<Instruction> {
+//     lazy_static! {
+//         static ref INST_RE: Regex = Regex::new(r"^\s*([a-zA-Z0-9]+)\s+").unwrap();
+//         static ref ARG_RE: Regex = Regex::new(r"[\s,]+").unwrap();
+//         static ref NUM_RE: Regex = Regex::new(r"^\-?(?:0[box])?[[:xdigit:]]+$").unwrap();
+//     }
+//
+//     if !INST_RE.is_match(&input) { return None };
+//
+//     let instr = INST_RE.captures(&input).unwrap().get(1).unwrap().as_str();
+//     let args: Vec<String> = ARG_RE.split(input[instr.len()..input.len()].trim()).map(String::from).collect();
+//
+//     match instr {
+//         "exit" => { std::process::exit(0); },
+//         "format" => {
+//             if args.len() != 2 { return None };
+//             let reg = get_register(args[0].clone());
+//             if reg.is_none() { return None };
+//             let reg = reg.unwrap();
+//
+//             return match args[1].as_str() {
+//                 "b" => Some(Instruction::Format { reg, kind: RegFormat::Bin }),
+//                 "o" => Some(Instruction::Format { reg, kind: RegFormat::Oct }),
+//                 "d" => Some(Instruction::Format { reg, kind: RegFormat::Dec }),
+//                 "s" => Some(Instruction::Format { reg, kind: RegFormat::Sig }),
+//                 "h" => Some(Instruction::Format { reg, kind: RegFormat::Hex }),
+//                 _ => None,
+//             }
+//         },
+//         "memview" => {
+//             if args.len() != 2 { return None };
+//             let index = get_number(args[0].clone());
+//             let length = get_number(args[1].clone());
+//             if index.is_none() || length.is_none() { return None };
+//             let index = index.unwrap() as usize;
+//             let length = length.unwrap() as usize;
+//
+//             return Some(Instruction::Memview { index, length })
+//         },
+//         "undo" => { return Some(Instruction::Undo { num: 1 }) },
+//         "redo" => { return Some(Instruction::Redo { num: 1 }) },
+//         "ldr" => {
+//             if args.len() != 2 { return None };
+//
+//             let dest = get_register(args[0].clone());
+//             if dest.is_none() { return None };
+//
+//             let address = get_register(args[1].clone());
+//             if address.is_none() { return None };
+//             return Some(Instruction::LdrImm { rn: address.unwrap(), rt: dest.unwrap(), offset: 0, add: false, index: false, wback: false })
+//         },
+//         "str" => {
+//             if args.len() != 2 { return None };
+//
+//             let val = get_register(args[0].clone());
+//             if val.is_none() { return None };
+//
+//             let address = get_register(args[1].clone());
+//             if address.is_none() { return None };
+//             return Some(Instruction::StrReg { val: val.unwrap(), address: address.unwrap() })
+//         },
+//         "mov" | "movs" => {
+//             if args.len() != 2 { return None };
+//
+//             let to = get_register(args[0].clone());
+//             if to.is_none() { return None };
+//
+//             if NUM_RE.is_match(&args[1]) {
+//                 let from = get_number(args[1].clone());
+//                 if from.is_none() { return None };
+//                 return Some(Instruction::MovImm { rd: to.unwrap(), val: from.unwrap(), flags: instr == "movs" })
+//             } else {
+//                 let from = get_register(args[1].clone());
+//                 if from.is_none() { return None };
+//                 return Some(Instruction::MovReg { to: to.unwrap(), from: from.unwrap(), flags: instr == "movs" })
+//             }
+//         },
+//         "add" | "adds" => {
+//             if args.len() < 2 { return None };
+//
+//             let dest = get_register(args[0].clone());
+//             if dest.is_none() { return None }
+//
+//             if args.len() == 2 && NUM_RE.is_match(&args[1]) {
+//                 let val = get_number(args[1].clone());
+//                 if val.is_none() { return None }
+//                 return Some(Instruction::AddImm { dest: dest.unwrap(), first: dest.unwrap(), val: val.unwrap(), flags: instr == "adds" });
+//             }
+//
+//             if args.len() == 2 {
+//                 let first = get_register(args[1].clone());
+//                 if first.is_none() { return None }
+//                 return Some(Instruction::AddReg { rd: dest.unwrap(), rm: dest.unwrap(), rn: first.unwrap(), flags: instr == "adds" });
+//             }
+//
+//             if args.len() == 3 && NUM_RE.is_match(&args[2]) {
+//                 let first = get_register(args[1].clone());
+//                 let val = get_number(args[2].clone());
+//                 if first.is_none() || val.is_none() { return None }
+//                 return Some(Instruction::AddImm { dest: dest.unwrap(), first: first.unwrap(), val: val.unwrap(), flags: instr == "adds" });
+//             }
+//
+//             if args.len() == 3 {
+//                 let first = get_register(args[1].clone());
+//                 let second = get_register(args[2].clone());
+//                 if first.is_none() || second.is_none() { return None }
+//                 return Some(Instruction::AddReg { rd: dest.unwrap(), rm: first.unwrap(), rn: second.unwrap(), flags: instr == "adds" });
+//             }
+//
+//             return None;
+//         },
+//         "sub" | "subs" => {
+//             if args.len() < 2 { return None };
+//
+//             let dest = get_register(args[0].clone());
+//             if dest.is_none() { return None }
+//
+//             if args.len() == 2 && NUM_RE.is_match(&args[1]) {
+//                 let val = get_number(args[1].clone());
+//                 if val.is_none() { return None }
+//                 return Some(Instruction::SubImm { dest: dest.unwrap(), first: dest.unwrap(), val: val.unwrap(), flags: instr == "subs" });
+//             }
+//
+//             if args.len() == 2 {
+//                 let first = get_register(args[1].clone());
+//                 if first.is_none() { return None }
+//                 return Some(Instruction::SubReg { dest: dest.unwrap(), first: dest.unwrap(), second: first.unwrap(), flags: instr == "subs" });
+//             }
+//
+//             if args.len() == 3 && NUM_RE.is_match(&args[2]) {
+//                 let first = get_register(args[1].clone());
+//                 let val = get_number(args[2].clone());
+//                 if first.is_none() || val.is_none() { return None }
+//                 return Some(Instruction::SubImm { dest: dest.unwrap(), first: first.unwrap(), val: val.unwrap(), flags: instr == "subs" });
+//             }
+//
+//             if args.len() == 3 {
+//                 let first = get_register(args[1].clone());
+//                 let second = get_register(args[2].clone());
+//                 if first.is_none() || second.is_none() { return None }
+//                 return Some(Instruction::SubReg { dest: dest.unwrap(), first: first.unwrap(), second: second.unwrap(), flags: instr == "subs" });
+//             }
+//
+//             return None;
+//         },
+//         _ => return None,
+//     }
+// }
 
 
 fn main () {
@@ -757,46 +920,23 @@ fn main () {
         }
     };
 
-    print!("\n{}\n> ", board);
-
-    match board.next_instruction(true) {
-        Ok(i) => {
-            println!("Ok: {:?}", i);
-            board.execute(i);
-        }
-        Err(e) => println!("Err: {}", e),
-    };
+    println!("\n{}\n", board);
+    println!("finished init");
 
     loop {
-        print!("\n{}\n> ", board);
+        print!("press enter to continue");
         io::stdout().flush().unwrap();
-
         let mut input = String::new();
         io::stdin().read_line(&mut input).unwrap();
 
-        let instruction = parse_input(input);
-
-        if instruction.is_none() {
-            println!("Invalid input");
-            continue;
-        }
-
-        // match instruction.unwrap() {
-        //     Instruction::MovImm { to, val, flags } => { board.mov_imm(to, val, flags); },
-        //     Instruction::MovReg { to, from, flags } => { board.mov_reg(to, from, flags); },
-        //     Instruction::AddImm { dest, first, val, flags } => { board.add_imm(dest, first, val, flags); },
-        //     Instruction::AddReg { dest, first, second, flags } => { board.add_reg(dest, first, second, flags); },
-        //     Instruction::SubImm { dest, first, val, flags } => { board.sub_imm(dest, first, val, flags); },
-        //     Instruction::SubReg { dest, first, second, flags } => { board.sub_reg(dest, first, second, flags); },
-        //     Instruction::LdrReg { dest, address, flags } => { board.ldr_reg(dest, address, flags); },
-        //     Instruction::StrReg { val, address } => { board.str_reg(val, address); },
-        //     Instruction::Undo { num } => { board.undo(num); },
-        //     Instruction::Redo { num } => { board.redo(num); },
-        //     Instruction::Format { reg, kind } => { board.set_display_format(reg, kind); },
-        //     Instruction::Memview { index, length } => { board.print_mem_dump(index, length); },
-        //     Instruction::Undefined => {
-        //         println!("Undefined instruction");
-        //     }
-        // }
+        match board.next_instruction(true) {
+            Ok(i) => {
+                println!("Ok: {:?}", i);
+                board.execute(i);
+                println!("\n{}\n", board);
+                board.memory.print_mem_dump(0, 100);
+            }
+            Err(e) => println!("Err: {}", e),
+        };
     }
 }
