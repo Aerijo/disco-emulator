@@ -32,6 +32,16 @@ pub enum Condition {
 }
 
 
+#[derive(Copy, Clone, Debug)]
+pub enum ShiftType {
+    LSL,
+    LSR,
+    ASR,
+    ROR,
+    RRX,
+}
+
+
 impl Condition {
     fn from (code: i32) -> Condition {
         assert!(code <= 0b1110);
@@ -80,11 +90,13 @@ pub enum Instruction {
     CmpReg { rm: u8, rn: u8 },
     AddSpImm { rd: u8, val: u32, flags: bool },
 
-    LdrLit { rt: u8, offset: u16 /* 12 bits + sign bit max */, add: bool },
+    LdrLit { rt: u8, address: u32 },
     LdrImm { rn: u8, rt: u8, offset: u16 /* 12 bits + sign bit max */, add: bool, index: bool, wback: bool },
     StrImm { rn: u8, rt: u8, offset: u16, add: bool, index: bool, wback: bool },
     LdrReg { rn: u8, rt: u8, rm: u8, shift: u8 },
     Ldrt { rn: u8, rt: u8, offset: u16 },
+
+    TstReg { rn: u8, rm: u8, shift_type: ShiftType, shift: u16 },
 
     Undefined,
     Unpredictable,
@@ -100,7 +112,7 @@ pub enum Instruction {
 impl Instruction {
     pub fn from (word: u32, pc: u32) -> (Instruction, bool) {
         return if (word >> 29 == 0b111) && (word >> 27 != 0b11100) {
-            (get_wide_instruction(word), true)
+            (get_wide_instruction(word, pc), true)
         } else {
             (get_narrow_instruction((word >> 16) as u16, pc), false)
         }
@@ -108,7 +120,12 @@ impl Instruction {
 
 }
 
+fn word_align (address: u32) -> u32 {
+    return address & !0b11;
+}
 
+// NOTE: pc value is of instruction start. Most instructions that use the PC
+// assume it is 4 bytes ahead (see page 124)
 fn get_narrow_instruction (hword: u16, pc: u32) -> Instruction {
     let op1 = hword >> 14;
 
@@ -119,11 +136,14 @@ fn get_narrow_instruction (hword: u16, pc: u32) -> Instruction {
                 id_ldr_str_single(hword)
             } else if bitset16(hword, 11) {
                 let rt = ((hword >> 8) & 0b111) as u8;
-                let mut offset = (((hword & 0xFF) << 2) + 2) as u16;
-                if (pc & 0b10) > 0 {
-                    offset -= 2;
-                }
-                Instruction::LdrLit { rt, offset, add: true }
+
+                // PC for offset value is based on page 124 of ARM manual.
+                // When instruction is executed, the theoretical PC value is guaranteed
+                // to be 4 bytes ahead of the instruction address. Ours is still pointing to
+                // the current instruction, so we add 4 and then word align.
+                // The PC value for LDR is then word aligned
+                let address = word_align(pc + 4) + ((hword as u32 & 0xFF) << 2);
+                Instruction::LdrLit { rt, address }
             } else if bitset16(hword, 10) {
                 id_special_data_branch(hword)
             } else {
@@ -137,7 +157,7 @@ fn get_narrow_instruction (hword: u16, pc: u32) -> Instruction {
                 let rd = ((hword >> 8) & 0b111) as u8;
                 return Instruction::AddSpImm { rd, val, flags: false }
             }
-            return Instruction::Undefined;
+            Instruction::Undefined
         }
         0b11 => {
             if bitset16(hword, 13) {
@@ -153,7 +173,7 @@ fn get_narrow_instruction (hword: u16, pc: u32) -> Instruction {
                 Instruction::Undefined
             }
         }
-        _ => Instruction::Undefined,
+        _ => panic!("Unexpected pattern"),
     }
 }
 
@@ -259,7 +279,7 @@ fn id_data_processing (hword: u16) -> Instruction {
             let rm = ((hword >> 3) & 0b111) as u8;
             Instruction::CmpReg { rm, rn }
         }
-        _ => Instruction::Undefined
+        _ => Instruction::Unimplemented
     }
 }
 
@@ -274,16 +294,19 @@ fn id_special_data_branch (hword: u16) -> Instruction {
             Instruction::AddReg { rd: rn, rm, rn, flags: false }
         }
         0b010 => {
-            if (hword & (1 << 6)) > 0 {
+            if bitset16(hword, 6) {
                 Instruction::Unpredictable
             } else {
                 Instruction::CmpReg { rm, rn }
             }
         }
+        0b100 | 0b101 => {
+            Instruction::MovReg { to: rn, from: rm, flags: false }
+        }
         0b110 => {
             Instruction::BranchExchange { rm }
         }
-        _ => Instruction::Undefined
+        _ => Instruction::Unimplemented
     }
 }
 
@@ -298,18 +321,20 @@ fn bitset16 (word: u16, bit: u16) -> bool {
 }
 
 
-fn get_wide_instruction (word: u32) -> Instruction {
+// NOTE: pc value is of instruction start. Most instructions that use the PC
+// assume it is 4 bytes ahead. Still need to find page that states this for
+// wide instructions.
+fn get_wide_instruction (word: u32, pc: u32) -> Instruction {
     let op1 = (word >> 27) & 0b11;
     let op2 = (word >> 20) & 0b111_1111;
     let op3 = (word >> 15) & 0b1;
 
     return match op1 {
         0b01 => {
-            if (op2 & 0b1100100) == 0b0000000 { return id_ldr_str_multiple(word); }
-            if (op2 & 0b1100100) == 0b0000100 { return id_ldr_str_dual(word); }
-            if (op2 & 0b1100000) == 0b0100000 { return id_data_processing_shifted(word); }
-            if (op2 & 0b1000000) == 0b1000000 { return id_coprocessor_instr(word); }
-            return Instruction::Undefined
+            if bitset(op2, 6) { return id_coprocessor_instr(word); }
+            if bitset(op2, 5) { return id_data_processing_shifted(word); }
+            if bitset(op2, 2) { return id_ldr_str_dual(word); }
+            id_ldr_str_multiple(word)
         }
         0b10 => {
             if op3 > 0 {
@@ -339,12 +364,12 @@ fn get_wide_instruction (word: u32) -> Instruction {
                 match op2 & 0b111 {
                     0b001 => id_load_byte(word),
                     0b011 => id_load_half_word(word),
-                    0b101 => id_load_word(word),
+                    0b101 => id_load_word(word, pc),
                     _ => Instruction::Undefined,
                 }
             }
         }
-        _ => Instruction::Undefined // 0b00 would be a narrow instruction
+        _ => panic!("Unexpected pattern") // 0b00 would be a narrow instruction
     }
 }
 
@@ -387,8 +412,48 @@ fn id_ldr_str_dual (word: u32) -> Instruction {
 }
 
 
-fn id_data_processing_shifted (word: u32) -> Instruction {
-    return Instruction::Undefined;
+fn id_data_processing_shifted (word: u32) -> Instruction { // p148
+    assert!((word >> 25) == 0b111_0101);
+    let op = (word >> 21) & 0b1111;
+    let s = ((word >> 20) & 0b1) > 0;
+    let rn_is_pc = ((word >> 16) & 0b1111) == 0b1111;
+    let rd = ((word >> 8) & 0b1111) as u8;
+    let rd_is_pc = rd == 0b1111;
+
+    return match op {
+        0b0000 => {
+            if rd_is_pc {
+                if s {
+                    Instruction::Unpredictable
+                } else {
+                    Instruction::Unimplemented // TST (reg)
+                }
+            } else {
+                Instruction::Unimplemented // ADD (reg)
+            }
+        }
+        0b0001 => Instruction::Unimplemented, // BIC (reg)
+        0b0010 => {
+            if rn_is_pc {
+                let det = (word >> 4) & 0b11;
+                let imm5 = ((word >> 10) & 0b11100) + ((word >> 6) & 0b11);
+                return match det {
+                    0b00 => {
+                        if imm5 == 0 {
+                            let rm = (word & 0b1111) as u8;
+                            Instruction::MovReg { to: rd, from: rm, flags: s }
+                        } else {
+                            Instruction::Unimplemented // LSL (imm)
+                        }
+                    }
+                    _ => Instruction::Unimplemented
+                }
+            } else {
+                Instruction::Unimplemented // ORR (reg)
+            }
+        }
+        _ => Instruction::Unimplemented
+    }
 }
 
 
@@ -517,9 +582,9 @@ fn id_load_half_word (word: u32) -> Instruction {
 }
 
 
-fn id_load_word (word: u32) -> Instruction {
+fn id_load_word (word: u32, pc: u32) -> Instruction {
     let op1 = (word >> 23) & 0b11;
-    let op2 = (word >> 6) & 0b111111;
+    let op2 = (word >> 6) & 0b11_1111;
     let rn = ((word >> 16) & 0b1111) as u8;
     let rt = ((word >> 12) & 0b1111) as u8;
     let offset = (word & 0b1111_1111_1111) as u16;
@@ -527,7 +592,9 @@ fn id_load_word (word: u32) -> Instruction {
     if (op1 & 0b10) > 0 { return Instruction::Undefined; }
 
     if rn == 0b1111 {
-        return Instruction::LdrLit { rt, offset, add: (op1 & 0b1) > 0 };
+        let add = (op1 & 0b1) > 0;
+        let base = word_align(pc + 4);
+        return Instruction::LdrLit { rt, address: if add { base + offset as u32 } else { base - offset as u32 } };
     }
 
     if op1 == 0b01 {
