@@ -300,13 +300,9 @@ impl Board {
         };
     }
 
-    fn next_instruction(&mut self, update_pc: bool) -> Result<Instruction, &str> {
+    fn next_instruction(&mut self, update_pc: bool) -> Result<Instruction, String> {
         let pc = self.read_pc().0;
-
-        let val = match self.memory.get_instr_word(pc) {
-            Ok(v) => v,
-            Err(e) => return Err(e),
-        };
+        let val = self.memory.get_instr_word(pc)?;
 
         println!("Reading: {:#010X}", val);
 
@@ -317,7 +313,7 @@ impl Board {
         println!("Instruction is {}", if wide { "wide" } else { "short" });
 
         if update_pc {
-            self.cpu.registers[15] += Wrapping(if wide { 4 } else { 2 });
+            self.inc_pc(wide);
         }
 
         return Ok(instr);
@@ -415,7 +411,7 @@ impl Board {
 
         println!("bmap: {:#?}", self.branch_map);
 
-        self.set_reg(15, Wrapping((elf.entry - 1) as u32)); // TODO: Work out why it points to 1 byte past start
+        self.set_pc(Wrapping((elf.entry - 1) as u32)); // TODO: Work out why it points to 1 byte past start
 
         match self.memory.load_elf(elf, &bytes) {
             Ok(_) => {}
@@ -458,32 +454,36 @@ impl Board {
         return self.read_reg(13);
     }
 
+    fn set_sp(&mut self, value: Wrapping<u32>) {
+        self.set_reg(13, value);
+    }
+
     fn read_lr(&self) -> Wrapping<u32> {
         return self.read_reg(14);
+    }
+
+    fn set_lr(&mut self, value: Wrapping<u32>) {
+        self.set_reg(14, value);
     }
 
     fn read_pc(&self) -> Wrapping<u32> {
         return self.read_reg(15);
     }
 
+    fn set_pc(&mut self, value: Wrapping<u32>) {
+        self.set_reg(15, value);
+    }
+
     fn inc_pc(&mut self, wide: bool) {
-        self.cpu.registers[15] += Wrapping(if wide { 4 } else { 2 });
+        self.set_pc(self.read_pc() + Wrapping(if wide { 4 } else { 2 }));
     }
 
     fn dec_pc(&mut self, wide: bool) {
-        self.cpu.registers[15] -= Wrapping(if wide { 4 } else { 2 });
+        self.set_pc(self.read_pc() - Wrapping(if wide { 4 } else { 2 }));
     }
 
     fn set_flags_nzcv(&mut self, v1: Wrapping<u32>, v2: Wrapping<u32>, result: Wrapping<u32>) {
         self.cpu.set_flags_nzcv(v1, v2, result);
-    }
-
-    fn save_reg_state(&mut self, reg: usize) {
-        self.command_stack.push(Transition {
-            reg: reg,
-            val: self.read_reg(reg),
-            flags: self.cpu.get_flag_state(),
-        });
     }
 
     fn mov_imm(&mut self, dest: usize, val: u32, flags: bool, carry: CarryChange) {
@@ -530,8 +530,8 @@ impl Board {
             _ => {}
         }
 
-        self.cpu.registers[14] = self.read_pc() | Wrapping(0b1);
-        self.branch(address); // TODO: Proper PC align
+        self.set_lr(self.read_pc() | Wrapping(0b1));
+        self.branch(address);
     }
 
     fn and_imm(&mut self, rd: usize, rn: usize, val: u32, flags: bool, carry: CarryChange) {
@@ -560,7 +560,6 @@ impl Board {
 
     fn mov_reg(&mut self, to: usize, from: usize, flags: bool) {
         assert!(to <= 15 && from <= 15);
-        self.save_reg_state(to);
         let val = self.read_reg(from);
         if flags {
             self.cpu.flags.n = (val.0 as i32) < 0;
@@ -621,22 +620,11 @@ impl Board {
         self.set_reg(dest, result);
     }
 
-    fn ldr_reg(&mut self, dest: usize, address: usize, flags: bool) {
+    fn ldr_reg(&mut self, dest: usize, address: usize, flags: bool) -> Result<(), String> {
         assert!(dest <= 15 && address <= 15);
 
         let address_val = self.read_reg(address).0;
-        if address_val < 0x20000000 || address_val > (0x20020000 - 4) {
-            println!("Invalid address {:#X} in r{}", address_val, address);
-            return;
-        }
-
-        let pointer = (address_val - 0x20000000) as usize;
-        let mut val = self.memory.data[pointer] as u32;
-        val += (self.memory.data[pointer + 1] as u32) << 8;
-        val += (self.memory.data[pointer + 2] as u32) << 16;
-        val += (self.memory.data[pointer + 3] as u32) << 24;
-
-        self.save_reg_state(dest);
+        let val = self.memory.get_word(address_val)?;
 
         if flags {
             self.cpu.flags.n = (val as i32) < 0;
@@ -644,6 +632,8 @@ impl Board {
         }
 
         self.set_reg(dest, Wrapping(val));
+
+        return Ok(());
     }
 
     fn str_reg(&mut self, source: usize, address: usize) {
@@ -732,7 +722,7 @@ impl Board {
     }
 
     fn push(&mut self, registers: u16) {
-        let mut sp = self.cpu.registers[13];
+        let mut sp = self.read_sp();
 
         for i in (0..16).rev() {
             if (registers & (1 << i)) == 0 {
