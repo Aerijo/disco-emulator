@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+use std::num::Wrapping;
 
 #[derive(Copy, Clone, Debug)]
 pub enum RegFormat {
@@ -32,16 +33,6 @@ pub enum Condition {
 }
 
 
-#[derive(Copy, Clone, Debug)]
-pub enum ShiftType {
-    LSL,
-    LSR,
-    ASR,
-    ROR,
-    RRX,
-}
-
-
 impl Condition {
     fn from (code: i32) -> Condition {
         assert!(code <= 0b1110);
@@ -67,6 +58,24 @@ impl Condition {
 }
 
 
+#[derive(Copy, Clone, Debug)]
+pub enum CarryChange {
+    Same,
+    Set,
+    Clear,
+}
+
+
+#[derive(Copy, Clone, Debug)]
+pub enum ShiftType {
+    LSL,
+    LSR,
+    ASR,
+    ROR,
+    RRX,
+}
+
+
 #[derive(Debug)]
 pub enum Instruction {
     MovReg { to: u8, from: u8, flags: bool },
@@ -75,12 +84,14 @@ pub enum Instruction {
     SubReg { dest: u8, first: u8, second: u8, flags: bool },
     StrReg { val: u8, address: u8 },
 
-    Branch { offset: i32 },
-    LinkedBranch { offset: i32 },
+    AndImm { rd: u8, rn: u8, val: u32, flags: bool, carry: CarryChange},
+
+    Branch { address: u32 },
+    LinkedBranch { address: u32 },
     BranchExchange { rm: u8 },
-    CondBranch { offset: i32, cond: Condition },
+    CondBranch { address: u32, cond: Condition },
     AddReg { rd: u8, rm: u8, rn: u8, flags: bool },
-    MovImm { rd: u8, val: u32, flags: bool },
+    MovImm { rd: u8, val: u32, flags: bool, carry: CarryChange },
     Stm { rn: u8, registers: u16, wback: bool },
     Stmdb { rn: u8, registers: u16, wback: bool },
     Ldm { rn: u8, registers: u16, wback: bool },
@@ -120,12 +131,78 @@ impl Instruction {
 
 }
 
+
+pub fn bitset (word: u32, bit: u32) -> bool {
+    return (word & (1 << bit)) > 0;
+}
+
+
+pub fn bitset16 (word: u16, bit: u16) -> bool {
+    return (word & (1 << bit)) > 0;
+}
+
+
 fn word_align (address: u32) -> u32 {
     return address & !0b11;
 }
 
-// NOTE: pc value is of instruction start. Most instructions that use the PC
-// assume it is 4 bytes ahead (see page 124)
+
+fn sign_extend (value: u32, from: u32) -> i32 {
+    return if bitset(value, from) {
+        (value | (!0 << from)) as i32
+    } else {
+        value as i32
+    };
+}
+
+
+// The pseudocode definition takes the current carry flag state
+// but does not use it in calculations. To make instructions stateless,
+// we instead return a value representing what to do with the current
+// carry flag when we execute it.
+fn thumb_expand_imm_c (input: u32) -> (u32, CarryChange) { // p137
+    assert!((input & !0xFFF) == 0); // only works on 12 bit numbers
+    if (input >> 8) == 0 {
+        return (input, CarryChange::Same); // 000X
+    }
+
+    if (input >> 10) == 0 {
+        let base = input & 0xFF;
+        if base == 0 {
+            panic!("Unpredictable thumb imm expansion");
+        }
+
+        let val = match input >> 8 {
+            0b01 => (base << 16) + base, // 0X0X
+            0b10 => (base << 24) + (base << 8), // X0X0
+            0b11 => (base << 24) + (base << 16) + (base << 8) + base, // XXXX
+            _ => panic!("Unexpected pattern"),
+        };
+
+        return (val, CarryChange::Same);
+    }
+
+    let unrotated_value = (1 << 7) | (input & 0xFF);
+    return rotate_right_32_c(unrotated_value, input >> 7);
+}
+
+
+fn rotate_right_32_c (input: u32, shift: u32) -> (u32, CarryChange) { // p27
+    assert!(shift != 0);
+    let m = shift % 32;
+    let result = (input >> m) | (input << (32 - m));
+    let carry_out = if bitset(result, 31) { CarryChange::Set } else { CarryChange::Clear };
+    return (result, carry_out);
+}
+
+
+fn thumb_expand_imm (val: u32) -> u32 { // p137
+    return thumb_expand_imm_c(val).0;
+}
+
+
+// NOTE: pc value is 4 bytes ahead of instruction start. Most instructions that use the PC
+// assume this when calculating offsets (see page 124).
 fn get_narrow_instruction (hword: u16, pc: u32) -> Instruction {
     let op1 = hword >> 14;
 
@@ -142,7 +219,7 @@ fn get_narrow_instruction (hword: u16, pc: u32) -> Instruction {
                 // to be 4 bytes ahead of the instruction address. Ours is still pointing to
                 // the current instruction, so we add 4 and then word align.
                 // The PC value for LDR is then word aligned
-                let address = word_align(pc + 4) + ((hword as u32 & 0xFF) << 2);
+                let address = word_align(pc) + ((hword as u32 & 0xFF) << 2);
                 Instruction::LdrLit { rt, address }
             } else if bitset16(hword, 10) {
                 id_special_data_branch(hword)
@@ -161,14 +238,11 @@ fn get_narrow_instruction (hword: u16, pc: u32) -> Instruction {
         }
         0b11 => {
             if bitset16(hword, 13) {
-                let mut offset = ((hword & 0x7FF) << 1) as u32;
-                if (offset & 0x800) > 0 {
-                    offset += 0xFFFFF << 12;
-                }
-                let offset = offset as i32;
-                Instruction::Branch { offset }
+                let offset = sign_extend(((hword & 0x7FF) << 1) as u32, 11);
+                let address = ((pc as i32) + offset) as u32;
+                Instruction::Branch { address }
             } else if bitset16(hword, 12) {
-                id_conditional_branch_supc(hword)
+                id_conditional_branch_supc(hword, pc)
             } else {
                 Instruction::Undefined
             }
@@ -219,20 +293,21 @@ fn id_misc (hword: u16) -> Instruction {
 }
 
 
-fn id_conditional_branch_supc (hword: u16) -> Instruction {
+fn id_conditional_branch_supc (hword: u16, pc: u32) -> Instruction {
     assert!((hword >> 12) == 0b1101);
     let op = (hword >> 8) & 0b1111;
     return match op {
-        0b1110 => Instruction::Undefined, // Actually; TODO: Distinguish unimplemented and actual undefined
-        0b1111 => Instruction::Undefined, // SUP
+        0b1110 => Instruction::Unimplemented,
+        0b1111 => Instruction::Unimplemented, // SUP
         _ => {
-            let mut offset = ((hword & 0xFF) << 1) as u32;
-            if (hword & 0x8) > 0 {
-                offset += 0xFFFFFE << 8;
-            }
-            let offset = offset as i32;
+            let offset = ((hword & 0x7F) << 1) as u32;
+            let address = if bitset16(hword, 7) {
+                word_align(pc) + offset
+            } else {
+                word_align(pc) - (!offset & 0x7F)
+            };
             let cond = Condition::from(((hword >> 8) & 0b1111) as i32);
-            Instruction::CondBranch { offset, cond }
+            Instruction::CondBranch { address, cond }
         }
     }
 }
@@ -248,7 +323,7 @@ fn id_shift_add_sub_move_cmp (hword: u16) -> Instruction {
             } else {
                 let rd = ((hword >> 8) & 0b111) as u8;
                 let val = (hword & 0xFF) as u32;
-                Instruction::MovImm { rd, val, flags: true } // TODO: Not in IT block
+                Instruction::MovImm { rd, val, flags: true, carry: CarryChange::Same } // TODO: No flags in IT block
             }
         }
         _ => Instruction::Undefined,
@@ -262,9 +337,9 @@ fn id_add_sub (hword: u16) -> Instruction {
     let rd = (hword & 0b111) as u8;
     return match (hword >> 9) & 0b11 {
         0b00 => Instruction::AddReg { rd, rm, rn, flags: true },
-        0b01 => Instruction::Undefined,
-        0b10 => Instruction::Undefined,
-        0b11 => Instruction::Undefined,
+        0b01 => Instruction::Unimplemented,
+        0b10 => Instruction::Unimplemented,
+        0b11 => Instruction::Unimplemented,
         _ => panic!("oops")
     }
 }
@@ -288,7 +363,7 @@ fn id_special_data_branch (hword: u16) -> Instruction {
     assert!((hword >> 10) == 0b010001);
     let op = (hword >> 7) & 0b111;
     let rm = ((hword >> 3) & 0b1111) as u8;
-    let rn = ((hword & 0b111) + (hword & (1 << 7)) >> 4) as u8;
+    let rn = (((hword >> 4) & (1 << 3)) + (hword & 0b111)) as u8;
     return match op {
         0b000 | 0b001 => {
             Instruction::AddReg { rd: rn, rm, rn, flags: false }
@@ -311,19 +386,6 @@ fn id_special_data_branch (hword: u16) -> Instruction {
 }
 
 
-fn bitset (word: u32, bit: u32) -> bool {
-    return (word & (1 << bit)) > 0;
-}
-
-
-fn bitset16 (word: u16, bit: u16) -> bool {
-    return (word & (1 << bit)) > 0;
-}
-
-
-// NOTE: pc value is of instruction start. Most instructions that use the PC
-// assume it is 4 bytes ahead. Still need to find page that states this for
-// wide instructions.
 fn get_wide_instruction (word: u32, pc: u32) -> Instruction {
     let op1 = (word >> 27) & 0b11;
     let op2 = (word >> 20) & 0b111_1111;
@@ -338,7 +400,7 @@ fn get_wide_instruction (word: u32, pc: u32) -> Instruction {
         }
         0b10 => {
             if op3 > 0 {
-                id_branch_and_misc(word)
+                id_branch_and_misc(word, pc)
             } else if bitset(op2, 5) {
                 id_data_proc_plain_binary_immediate(word)
             } else {
@@ -463,7 +525,7 @@ fn id_coprocessor_instr (word: u32) -> Instruction {
 }
 
 
-fn id_branch_and_misc (word: u32) -> Instruction {
+fn id_branch_and_misc (word: u32, pc: u32) -> Instruction {
     assert!((word & (0b1111_1000_0000_0000_1 << 15)) == 0b1111_0000_0000_0000_1 << 15);
     let op1 = (word >> 12) & 0b111;
 
@@ -476,14 +538,11 @@ fn id_branch_and_misc (word: u32) -> Instruction {
         let imm11 = (word & 0x7FF) << 1;
         let mut offset = imm10 + imm11;
 
-        let i1 = !(s ^ j1);
-        let i2 = !(s ^ j2);
-
-        if i2 {
+        if !(s ^ j2) {
             offset += 1 << 22;
         }
 
-        if i1 {
+        if !(s ^ j1) {
             offset += 1 << 23;
         }
 
@@ -491,12 +550,12 @@ fn id_branch_and_misc (word: u32) -> Instruction {
             offset += 0xFF << 24;
         }
 
-        let offset = offset as i32;
+        let address = (Wrapping(word_align(pc)) + Wrapping(offset)).0;
 
         return if bitset(word, 14) {
-            Instruction::LinkedBranch { offset }
+            Instruction::LinkedBranch { address }
         } else {
-            Instruction::Branch { offset: offset - 2 } // TODO: Proper offset
+            Instruction::Branch { address } // TODO: Proper offset
         }
     }
 
@@ -504,9 +563,7 @@ fn id_branch_and_misc (word: u32) -> Instruction {
 }
 
 
-fn thumb_expand_imm_c (val: u32, _carry: bool) -> u32 {
-    return val; // TODO
-}
+
 
 
 fn id_data_proc_modified_immediate (word: u32) -> Instruction {
@@ -514,38 +571,57 @@ fn id_data_proc_modified_immediate (word: u32) -> Instruction {
 
     let op = (word >> 21) & 0b1111;
     let rn = ((word >> 16) & 0b1111) as u8;
+    let rn_is_pc = rn == 0b1111;
     let rd = ((word >> 8) & 0b1111) as u8;
 
     return match op {
-        0b0010 if rn == 0b1111 => {
-            let mut data = word & 0xFF;
-            data += (word & (0b111 << 12)) >> 4;
-            data += (word & (0b1 << 26)) >> 15;
-            Instruction::MovImm { rd, val: thumb_expand_imm_c(data, false), flags: bitset(word, 20) }
+        0b0010 if rn_is_pc => {
+            let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
+            let (imm32, carry) = thumb_expand_imm_c(imm12);
+            Instruction::MovImm { rd, val: imm32, flags: bitset(word, 20), carry }
         }
-        _ => Instruction::Undefined,
+        0b1000 if !rn_is_pc => {
+            let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
+            let imm32 = thumb_expand_imm(imm12);
+            Instruction::AddImm { dest: rd, first: rn, val: imm32, flags: bitset(word, 20) }
+        }
+        _ => Instruction::Unimplemented,
     }
 }
 
 
 fn id_data_proc_plain_binary_immediate (word: u32) -> Instruction {
-    return Instruction::Undefined;
+    assert!((word & (0b1111_1010_0000_0000_1 << 15)) == 0b1111_0010_0000_0000_0 << 15);
+    let op = (word >> 20) & 0b1_1111;
+    let rn = (word >> 16) & 0b1111;
+    let rn_is_pc = rn == 0b1111;
+
+    return match op {
+        0b0_0000 if !rn_is_pc => Instruction::Unimplemented, // ADD (imm)
+        0b0_0000 if rn_is_pc => Instruction::Unimplemented, // ADR
+        0b0_0100 => {
+            let rd = ((word >> 8) & 0b1111) as u8;
+            let imm32 = ((word >> 4) & (0xF << 12)) + ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
+            Instruction::MovImm { rd, val: imm32, flags: false, carry: CarryChange::Same }
+        },
+        _ => Instruction::Unimplemented,
+    }
 }
 
 
 fn id_long_multiply_diff (word: u32) -> Instruction {
-    assert!((word & (0b111111111 << 23)) == 0b111110111 << 23);
-    return Instruction::Undefined;
+    assert!((word & (0b1111_1111_1 << 23)) == 0b1111_1011_1 << 23);
+    return Instruction::Unimplemented;
 }
 
 
 fn id_multiply_diff (word: u32) -> Instruction {
-    return Instruction::Undefined;
+    return Instruction::Unimplemented;
 }
 
 
 fn id_data_proc_register (word: u32) -> Instruction {
-    return Instruction::Undefined;
+    return Instruction::Unimplemented;
 }
 
 
@@ -567,18 +643,18 @@ fn id_store_single (word: u32) -> Instruction {
             let offset = (word & 0xFF) as u16;
             Instruction::StrImm { rn, rt, offset, add: bitset(word, 9), index: bitset(word, 10), wback: bitset(word, 8) }
         },
-        _ => Instruction::Undefined,
+        _ => Instruction::Unimplemented,
     }
 }
 
 
 fn id_load_byte (word: u32) -> Instruction {
-    return Instruction::Undefined;
+    return Instruction::Unimplemented;
 }
 
 
 fn id_load_half_word (word: u32) -> Instruction {
-    return Instruction::Undefined;
+    return Instruction::Unimplemented;
 }
 
 
@@ -593,7 +669,7 @@ fn id_load_word (word: u32, pc: u32) -> Instruction {
 
     if rn == 0b1111 {
         let add = (op1 & 0b1) > 0;
-        let base = word_align(pc + 4);
+        let base = word_align(pc);
         return Instruction::LdrLit { rt, address: if add { base + offset as u32 } else { base - offset as u32 } };
     }
 

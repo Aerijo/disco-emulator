@@ -9,7 +9,7 @@ extern crate goblin;
 
 mod instruction;
 
-use instruction::{Instruction, RegFormat, Condition};
+use instruction::{Instruction, RegFormat, Condition, CarryChange, bitset};
 
 use std::time::{SystemTime};
 use std::num::Wrapping;
@@ -292,7 +292,9 @@ impl Board {
 
         println!("Reading: {:#010X}", val);
 
-        let (instr, wide) = Instruction::from(val, pc);
+        // Most instructions that use the PC assume it is +4 bytes
+        // from their position when calculating offsets (see page 124).
+        let (instr, wide) = Instruction::from(val, pc + 4);
 
         println!("Instruction is {}", if wide { "wide" } else { "short" });
 
@@ -307,12 +309,15 @@ impl Board {
         match instr {
             Instruction::LdrLit { rt, address } => self.ldr_lit(rt as usize, address),
             Instruction::LdrImm { rn, rt, offset, add, index, wback } => self.ldr_imm(rt as usize, rn as usize, offset, index, add, wback),
-            Instruction::MovImm { rd, val, flags } => self.mov_imm(rd as usize, val, flags),
+            Instruction::MovImm { rd, val, flags, carry } => self.mov_imm(rd as usize, val, flags, carry),
             Instruction::MovReg { to, from, flags } => self.mov_reg(to as usize, from as usize, flags),
+            Instruction::AddImm { dest, first, val, flags } => self.add_imm(dest as usize, first as usize, val, flags),
             Instruction::AddReg { rd, rm, rn, flags } => self.add_reg(rd as usize, rm as usize, rn as usize, flags),
-            Instruction::Branch { offset } => self.branch(offset),
-            Instruction::LinkedBranch { offset } => self.branch_with_link(offset),
-            Instruction::CondBranch { offset, cond } => self.branch_cond(offset, cond),
+            Instruction::AndImm { rd, rn, val, flags, carry } => self.and_imm(rd as usize, rn as usize, val, flags, carry),
+            Instruction::Branch { address } => self.branch(address),
+            Instruction::BranchExchange { rm } => self.branch_exchange(rm as usize),
+            Instruction::LinkedBranch { address } => self.branch_with_link(address),
+            Instruction::CondBranch { address, cond } => self.branch_cond(address, cond),
             Instruction::CmpReg { rm, rn } => self.cmp_reg(rm as usize, rn as usize),
             Instruction::StrImm { rn, rt, offset, add, index, wback } => self.str_imm(rt as usize, rn as usize, offset, index, add, wback),
             Instruction::Push { registers } => self.push(registers),
@@ -372,34 +377,6 @@ impl Board {
         self.memory.print_mem_dump(index, length);
     }
 
-    fn undo (&mut self, mut num: usize) {
-        while num > 0 {
-            num -= 1;
-
-            let last = self.command_stack.pop();
-            if last.is_none() {
-                println!("No more instructions to undo!");
-                return;
-            }
-
-            match last.unwrap() {
-                Transition { reg, val, flags } => {
-                    self.dec_pc();
-                    self.set_reg(reg, val);
-                    self.cpu.flags.n = (flags & 1 << 0) > 0;
-                    self.cpu.flags.z = (flags & 1 << 1) > 0;
-                    self.cpu.flags.c = (flags & 1 << 2) > 0;
-                    self.cpu.flags.v = (flags & 1 << 3) > 0;
-                    self.cpu.flags.q = (flags & 1 << 4) > 0;
-                }
-            }
-        }
-    }
-
-    fn redo (&mut self, _num: usize) {
-        println!("To be added");
-    }
-
     fn read_reg (&self, reg: usize) -> Wrapping<u32> {
         return self.cpu.read_reg(reg);
     }
@@ -429,12 +406,12 @@ impl Board {
         return self.read_reg(15);
     }
 
-    fn inc_pc (&mut self) {
-        self.cpu.registers[15] += Wrapping(2);
+    fn inc_pc (&mut self, wide: bool) {
+        self.cpu.registers[15] += Wrapping(if wide { 4 } else { 2 });
     }
 
-    fn dec_pc (&mut self) {
-        self.cpu.registers[15] -= Wrapping(1);
+    fn dec_pc (&mut self, wide: bool) {
+        self.cpu.registers[15] -= Wrapping(if wide { 4 } else { 2 });
     }
 
     fn set_flags_nzcv (&mut self, v1: Wrapping<u32>, v2: Wrapping<u32>, result: Wrapping<u32>) {
@@ -449,33 +426,42 @@ impl Board {
         });
     }
 
-    fn mov_imm (&mut self, dest: usize, val: u32, flags: bool) {
+    fn mov_imm (&mut self, dest: usize, val: u32, flags: bool, carry: CarryChange) {
         assert!(dest <= 15);
 
         if flags {
             self.cpu.flags.n = (val as i32) < 0;
             self.cpu.flags.z = val == 0;
+            self.cpu.flags.c = match carry {
+                CarryChange::Same => self.cpu.flags.c,
+                CarryChange::Set => true,
+                CarryChange::Clear => false,
+            };
         }
 
         self.set_reg(dest, Wrapping(val));
     }
 
-    fn branch (&mut self, offset: i32) {
-        self.cpu.registers[15] += Wrapping(offset as u32) + Wrapping(2); // TODO: Precisely determine proper PC value
+    fn branch (&mut self, address: u32) {
+        self.cpu.registers[15] = Wrapping(address);
     }
 
-    fn branch_cond (&mut self, offset: i32, cond: Condition) {
-        if self.cpu.check_condition(cond) {
-            self.branch(offset);
+    fn branch_exchange (&mut self, rm: usize) { // BXWritePC (p31)
+        let address = self.cpu.read_reg(rm).0;
+        self.branch(address & !0b1);
+        if (address & 0b1) > 0 {
+            panic!("TODO: Handle UsageFault('Invalid State')");
         }
     }
 
-    fn branch_with_link (&mut self, offset: i32) {
-        let pc = self.read_pc();
-        let new_address = (pc + Wrapping(offset as u32)).0;
+    fn branch_cond (&mut self, address: u32, cond: Condition) {
+        if self.cpu.check_condition(cond) {
+            self.branch(address);
+        }
+    }
 
-
-        match self.branch_map.get(&new_address) {
+    fn branch_with_link (&mut self, address: u32) {
+        match self.branch_map.get(&address) {
             Some(b) if !b => {
                 println!("Skipping branch with link");
                 return;
@@ -483,8 +469,25 @@ impl Board {
             _ => {}
         }
 
-        self.cpu.registers[14] = pc | Wrapping(0b1);
-        self.branch(offset - 2); // TODO: Proper PC align
+        self.cpu.registers[14] = self.read_pc() | Wrapping(0b1);
+        self.branch(address); // TODO: Proper PC align
+    }
+
+    fn and_imm (&mut self, rd: usize, rn: usize, val: u32, flags: bool, carry: CarryChange) {
+        assert!(rd <= 15 && rn <= 15);
+
+        let result = self.read_reg(rn).0 & val;
+        self.set_reg(rd, Wrapping(result));
+
+        if flags {
+            self.cpu.flags.n = bitset(result, 31);
+            self.cpu.flags.z = result == 0;
+            self.cpu.flags.c = match carry {
+                CarryChange::Same => self.cpu.flags.c,
+                CarryChange::Set => true,
+                CarryChange::Clear => false,
+            };
+        }
     }
 
     fn cmp_reg (&mut self, rm: usize, rn: usize) {
