@@ -716,8 +716,14 @@ fn id_data_proc_modified_immediate(word: u32) -> Instruction {
     let rn = ((word >> 16) & 0b1111) as u8;
     let rn_is_pc = rn == 0b1111;
     let rd = ((word >> 8) & 0b1111) as u8;
+    let rd_is_pc = rd == 0b1111;
 
     return match op {
+        0b0000 if !rd_is_pc => {
+            let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
+            let (imm32, carry) = thumb_expand_imm_c(imm12);
+            Instruction::AndImm { rd, rn, val: imm32, flags: bitset(word, 20), carry }
+        }
         0b0010 if rn_is_pc => {
             let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
             let (imm32, carry) = thumb_expand_imm_c(imm12);

@@ -58,7 +58,7 @@ struct CPU {
 impl CPU {
     fn new() -> CPU {
         return CPU {
-            registers: [Wrapping(0xABCD1234); 16],
+            registers: [Wrapping(0); 16],
             flags: Flags {
                 n: false,
                 z: true,
@@ -454,6 +454,14 @@ impl Board {
         self.register_formats[reg] = kind;
     }
 
+    fn read_sp(&self) -> Wrapping<u32> {
+        return self.read_reg(13);
+    }
+
+    fn read_lr(&self) -> Wrapping<u32> {
+        return self.read_reg(14);
+    }
+
     fn read_pc(&self) -> Wrapping<u32> {
         return self.read_reg(15);
     }
@@ -502,7 +510,7 @@ impl Board {
         // BXWritePC (p31)
         let address = self.cpu.read_reg(rm).0;
         self.branch(address & !0b1);
-        if (address & 0b1) > 0 {
+        if (address & 0b1) == 0 {
             panic!("TODO: Handle UsageFault('Invalid State')");
         }
     }
@@ -740,7 +748,7 @@ impl Board {
     fn add_sp_imm(&mut self, rd: usize, val: u32, flags: bool) {
         assert!(rd <= 15);
 
-        let orig = self.read_reg(13);
+        let orig = self.read_sp();
         let result = orig + Wrapping(val);
 
         if flags {
@@ -812,6 +820,7 @@ fn main() {
         io::stdout().flush().unwrap();
         let mut input = String::new();
         io::stdin().read_line(&mut input).unwrap();
+        print!("\n\n");
 
         match board.next_instruction(true) {
             Ok(i) => {
