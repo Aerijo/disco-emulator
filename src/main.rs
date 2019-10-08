@@ -437,7 +437,7 @@ impl Board {
             };
 
             if name == "SystemInit" || name == "__libc_init_array" || name == "init" {
-                self.branch_map.insert(sym.st_value as u32, false);
+                self.branch_map.insert((sym.st_value as u32) & !0b1, false);
             }
         }
 
@@ -556,6 +556,7 @@ impl Board {
     }
 
     fn branch_with_link(&mut self, address: u32) {
+        println!("BMAP: {:?}", self.branch_map);
         match self.branch_map.get(&address) {
             Some(b) if !b => {
                 println!("Skipping branch with link");
@@ -646,17 +647,17 @@ impl Board {
         self.set_reg(dest, result);
     }
 
-    fn sub_reg(&mut self, dest: usize, first: usize, second: usize, flags: bool) {
-        assert!(dest <= 15 && first <= 15 && second <= 15);
+    fn sub_reg(&mut self, rd: usize, rm: usize, rn: usize, flags: bool) {
+        assert!(rd <= 15 && rm <= 15 && rn <= 15);
 
-        let v1 = self.read_reg(first);
-        let v2 = self.read_reg(second);
+        let v1 = self.read_reg(rm);
+        let v2 = self.read_reg(rn);
         let result = v1 - v2;
         if flags {
             self.set_flags_nzcv(v1, v2, result);
         }
 
-        self.set_reg(dest, result);
+        self.set_reg(rd, result);
     }
 
     fn str_reg(&mut self, rt: usize, rn: usize, rm: usize, shift_amount: u32, shift_type: ShiftType) {
@@ -764,7 +765,7 @@ impl Board {
             sp -= Wrapping(4);
         }
 
-        self.cpu.registers[13] = sp;
+        self.set_sp(sp);
     }
 
     fn add_sp_imm(&mut self, rd: usize, val: u32, flags: bool) {
@@ -839,12 +840,18 @@ fn main() {
 
     let now = SystemTime::now();
 
+    let mut cont = true;
+
     loop {
-        print!("press enter to continue");
-        io::stdout().flush().unwrap();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        print!("\n\n");
+        if !cont {
+            print!("press enter to continue");
+            io::stdout().flush().unwrap();
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            print!("\n\n");
+        } else {
+            cont = board.read_pc().0 != 0x0800_2d22;
+        }
 
         match board.next_instruction(true) {
             Ok(i) => {

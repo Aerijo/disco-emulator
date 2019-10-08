@@ -91,9 +91,9 @@ pub enum Instruction {
         flags: bool,
     },
     SubReg {
-        dest: u8,
-        first: u8,
-        second: u8,
+        rd: u8,
+        rm: u8,
+        rn: u8,
         flags: bool,
     },
     StrReg {
@@ -801,7 +801,7 @@ fn id_branch_and_misc(word: u32, pc: u32) -> Instruction {
             offset += 0xFF << 24;
         }
 
-        let address = (Wrapping(word_align(pc)) + Wrapping(offset)).0;
+        let address = (Wrapping(pc) + Wrapping(offset)).0;
 
         return if bitset(word, 14) {
             Instruction::LinkedBranch { address }
