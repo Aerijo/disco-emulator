@@ -62,7 +62,7 @@ pub enum CarryChange {
     Clear,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ShiftType {
     LSL,
     LSR,
@@ -191,10 +191,13 @@ pub enum Instruction {
         wback: bool,
     },
     LdrReg {
+        // This is defined with add, index, and wback, but apparently
+        // only ever uses true, true, and false for their values.
         rn: u8,
         rt: u8,
         rm: u8,
         shift: u8,
+        shift_type: ShiftType,
     },
     Ldrt {
         rn: u8,
@@ -303,9 +306,89 @@ fn rotate_right_32_c(input: u32, shift: u32) -> (u32, CarryChange) {
     return (result, carry_out);
 }
 
+fn ror_c(input: u32, shift: u32) -> (u32, bool) {
+    let (result, change) = rotate_right_32_c(input, shift);
+    return match change {
+        CarryChange::Set => (result, true),
+        CarryChange::Clear => (result, false),
+        _ => panic!(),
+    }
+}
+
 fn thumb_expand_imm(val: u32) -> u32 {
     // p137
     return thumb_expand_imm_c(val).0;
+}
+
+fn rrx_c(input: u32, carry_in: u32) -> (u32, bool) {
+    // p27
+    let result = (input >> 1) + (carry_in << 31);
+    let carry_out = bitset(result, 0);
+    return (result, carry_out);
+}
+
+fn rrx(input: u32, carry_in: u32) -> u32 {
+    // p27
+    return rrx_c(input, carry_in).0;
+}
+
+fn lsl_c(input: u32, shift: u32) -> (u32, bool) {
+    // p26
+    assert!(shift > 0 && shift <= 32);
+    let result = input << shift;
+    let carry_out = bitset(input, 32 - shift);
+    return (result, carry_out);
+}
+
+fn lsr_c(input: u32, shift: u32) -> (u32, bool) {
+    // p26
+    assert!(shift > 0 && shift <= 32);
+    let result = input >> shift;
+    let carry_out = bitset(input, shift - 1);
+    return (result, carry_out);
+}
+
+fn asr_c(input: u32, shift: u32) -> (u32, bool) {
+    // p27
+    assert!(shift > 0 && shift <= 32);
+    let result = ((input as i32) >> shift) as u32;
+    let carry_out = bitset(input, shift - 1);
+    return (result, carry_out);
+}
+
+pub fn shift_c(input: u32, shift_type: ShiftType, amount: u32, carry_in: u32) -> (u32, bool) {
+    // p181
+    assert!(!(shift_type == ShiftType::RRX && amount != 1));
+    if amount == 0 {
+        return (input, carry_in == 1);
+    }
+
+    return match shift_type {
+        ShiftType::LSL => lsl_c(input, amount),
+        ShiftType::LSR => lsr_c(input, amount),
+        ShiftType::ASR => asr_c(input, amount),
+        ShiftType::ROR => ror_c(input, amount),
+        ShiftType::RRX => rrx_c(input, amount),
+    }
+}
+
+pub fn shift(input: u32, shift_type: ShiftType, amount: u32, carry_in: u32) -> u32 {
+    // p181
+    return shift_c(input, shift_type, amount, carry_in).0;
+}
+
+pub fn add_with_carry(x: u32, y: u32, carry_in: u32) -> (u32, bool, bool) {
+    // p28
+    let unsigned_sum = (x as u64) + (y as u64) + (carry_in as u64);
+    let result = unsigned_sum & 0xFFFF_FFFF;
+    let carry_out = result != unsigned_sum;
+
+    let x_neg = bitset(x, 31);
+    let y_neg = bitset(y, 31);
+    let result_neg = bitset(result as u32   , 31);
+    let overflow = (x_neg == y_neg) && (x_neg != result_neg);
+
+    return (result as u32, carry_out, overflow);
 }
 
 // NOTE: pc value is 4 bytes ahead of instruction start. Most instructions that use the PC
@@ -372,7 +455,13 @@ fn id_ldr_str_single(hword: u16) -> Instruction {
 
     return match op_a {
         0b0101 => match op_b {
-            0b100 => Instruction::Unimplemented,
+            0b100 => {
+                // p257
+                let rm = ((hword >> 6) & 0b111) as u8;
+                let rn = ((hword >> 3) & 0b111) as u8;
+                let rt = (hword & 0b111) as u8;
+                Instruction::LdrReg { rt, rm, rn, shift: 0, shift_type: ShiftType::LSL }
+            }
             _ => Instruction::Unimplemented,
         },
         0b0110 if op_c => {
@@ -415,12 +504,8 @@ fn id_conditional_branch_supc(hword: u16, pc: u32) -> Instruction {
         0b1110 => Instruction::Unimplemented,
         0b1111 => Instruction::Unimplemented, // SUP
         _ => {
-            let offset = ((hword & 0x7F) << 1) as u32;
-            let address = if bitset16(hword, 7) {
-                word_align(pc) + offset
-            } else {
-                word_align(pc) - (!offset & 0x7F)
-            };
+            let imm32 = sign_extend(((hword & 0xFF) << 1) as u32, 8);
+            let address = ((pc as i32) + imm32) as u32;
             let cond = Condition::from(((hword >> 8) & 0b1111) as i32);
             Instruction::CondBranch { address, cond }
         }
@@ -869,7 +954,7 @@ fn id_load_word(word: u32, pc: u32) -> Instruction {
     if op2 == 0 {
         let rm = (word & 0b1111) as u8;
         let shift = ((word >> 4) & 0b11) as u8;
-        return Instruction::LdrReg { rn, rt, rm, shift };
+        return Instruction::LdrReg { rn, rt, rm, shift, shift_type: ShiftType::LSL };
     }
 
     let op3 = op2 >> 2;

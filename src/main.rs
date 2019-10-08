@@ -8,7 +8,7 @@ extern crate regex;
 
 mod instruction;
 
-use instruction::{bitset, CarryChange, Condition, Instruction, RegFormat};
+use instruction::{bitset, add_with_carry, shift, CarryChange, Condition, Instruction, RegFormat, ShiftType};
 
 use goblin::elf::Elf;
 use regex::Regex;
@@ -189,33 +189,48 @@ impl MemoryBus {
                 return Err(String::from("Unexpected program header type"));
             }
 
-            if header.p_vaddr != 0x0800_0000 {
+            if header.p_vaddr < 0x0800_0000 {
                 continue;
             }
 
+            let phys_adr = header.p_paddr as usize;
             let offset = header.p_offset as usize;
             let size = header.p_filesz as usize;
 
-            if size > self.flash.len() {
-                return Err(String::from("Flash too large"));
+            let start_index = phys_adr - 0x0800_0000;
+
+            if start_index + size > self.flash.len() {
+                return Err(String::from("Flash too small to fit content"));
             }
 
             for i in 0..size {
-                self.flash[i] = bytes[i + offset];
+                self.flash[i + start_index] = bytes[i + offset];
             }
         }
         return Ok(());
     }
 
-    fn print_mem_dump(&self, mut index: usize, length: usize) {
-        if index > 0x20000000 {
-            index -= 0x20000000;
+    fn print_mem_dump(&self, index: usize, length: usize) {
+        let mut c = 16;
+        for i in (index..(index + length * 4)).step_by(4) {
+            if c == 0 {
+                c = 16;
+                print!("\n");
+            }
+            c -= 1;
+            let val = match self.get_word(i as u32) {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("{}", e);
+                    return;
+                }
+            };
+            print!("{:#010X} ", val);
         }
-        if index + length > self.data.len() {
-            println!("Index out of range");
-            return;
-        }
+        print!("\n");
+    }
 
+    fn print_raw_mem_dump(&self, index: usize, length: usize) {
         let mut c = 16;
         for i in index..(index + length) {
             if c == 0 {
@@ -223,7 +238,8 @@ impl MemoryBus {
                 print!("\n");
             }
             c -= 1;
-            print!("{:02X} ", self.data[i]);
+            let val = self.flash[i - 0x0800_0000];
+            print!("{:02X} ", val);
         }
         print!("\n");
     }
@@ -249,7 +265,9 @@ impl MemoryBus {
         return self.data.len() as u32;
     }
 
-    fn get_word(&self, address: u32) -> Result<u32, &str> {
+    fn get_word(&self, address: u32) -> Result<u32, String> {
+        // TODO: Map 0x0--something to 0x0800_0000--something
+
         if 0x0800_0000 <= address && address <= 0x0800_0000 + self.get_flash_capacity() - 4 {
             let base = (address - 0x0800_0000) as usize;
             let b1 = self.flash[base] as u32;
@@ -265,7 +283,7 @@ impl MemoryBus {
             let b4 = self.data[base + 3] as u32;
             return Ok((b4 << 24) + (b3 << 16) + (b2 << 8) + b1);
         } else {
-            return Err("Out of bounds access");
+            return Err(String::from("Out of bounds access"));
         };
     }
 
@@ -370,6 +388,7 @@ impl Board {
             } => self.str_imm(rt as usize, rn as usize, offset, index, add, wback),
             Instruction::Push { registers } => self.push(registers),
             Instruction::AddSpImm { rd, val, flags } => self.add_sp_imm(rd as usize, val, flags),
+            Instruction::LdrReg { rt, rn, rm, shift, shift_type } => self.ldr_reg(rt as usize, rn as usize, rm as usize, shift as u32, shift_type),
             Instruction::Undefined => {}
             Instruction::Unpredictable => {
                 println!("Spooky");
@@ -404,14 +423,11 @@ impl Board {
             };
 
             if name == "SystemInit" || name == "__libc_init_array" || name == "init" {
-                let address = (sym.st_value & 0xFFFFFFFE) as u32;
-                self.branch_map.insert(address, false);
+                self.branch_map.insert(sym.st_value as u32, false);
             }
         }
 
-        println!("bmap: {:#?}", self.branch_map);
-
-        self.set_pc(Wrapping((elf.entry - 1) as u32)); // TODO: Work out why it points to 1 byte past start
+        self.bx_write_pc(elf.entry as u32);
 
         match self.memory.load_elf(elf, &bytes) {
             Ok(_) => {}
@@ -503,16 +519,20 @@ impl Board {
     }
 
     fn branch(&mut self, address: u32) {
-        self.cpu.registers[15] = Wrapping(address);
+        self.set_pc(Wrapping(address));
     }
 
-    fn branch_exchange(&mut self, rm: usize) {
-        // BXWritePC (p31)
-        let address = self.cpu.read_reg(rm).0;
+    fn bx_write_pc(&mut self, address: u32) {
+        // p31
         self.branch(address & !0b1);
         if (address & 0b1) == 0 {
             panic!("TODO: Handle UsageFault('Invalid State')");
         }
+    }
+
+    fn branch_exchange(&mut self, rm: usize) {
+        let address = self.cpu.read_reg(rm).0;
+        self.bx_write_pc(address);
     }
 
     fn branch_cond(&mut self, address: u32, cond: Condition) {
@@ -553,9 +573,14 @@ impl Board {
 
     fn cmp_reg(&mut self, rm: usize, rn: usize) {
         assert!(rm <= 15 && rn <= 15);
-        let vm = self.read_reg(rm);
-        let vn = self.read_reg(rn);
-        self.cpu.set_flags_nzcv(vm, vn, vn - vm);
+        let x = self.read_reg(rn).0;
+        let y = self.read_reg(rm).0;
+        // TODO: Shift y
+        let (result, carry, overflow) = add_with_carry(x, !y, 1);
+        self.cpu.flags.n = bitset(result, 31);
+        self.cpu.flags.z = result == 0;
+        self.cpu.flags.c = carry;
+        self.cpu.flags.v = overflow;
     }
 
     fn mov_reg(&mut self, to: usize, from: usize, flags: bool) {
@@ -620,22 +645,6 @@ impl Board {
         self.set_reg(dest, result);
     }
 
-    fn ldr_reg(&mut self, dest: usize, address: usize, flags: bool) -> Result<(), String> {
-        assert!(dest <= 15 && address <= 15);
-
-        let address_val = self.read_reg(address).0;
-        let val = self.memory.get_word(address_val)?;
-
-        if flags {
-            self.cpu.flags.n = (val as i32) < 0;
-            self.cpu.flags.z = val == 0;
-        }
-
-        self.set_reg(dest, Wrapping(val));
-
-        return Ok(());
-    }
-
     fn str_reg(&mut self, source: usize, address: usize) {
         assert!(source <= 15 && address <= 15);
 
@@ -689,6 +698,30 @@ impl Board {
         }
 
         self.set_reg(rt, Wrapping(val)); // TODO: Special case PC
+    }
+
+    fn load_write_pc(&mut self, address: u32) {
+        self.bx_write_pc(address);
+    }
+
+    fn ldr_reg(&mut self, rt: usize, rn: usize, rm: usize, shift_amount: u32, shift_type: ShiftType) {
+        let offset = shift(self.read_reg(rm).0, shift_type, shift_amount, self.cpu.flags.c as u32);
+        let address = (self.read_reg(rn) + Wrapping(offset)).0;
+        let data = match self.memory.get_word(address) {
+            Ok(v) => v,
+            Err(e) => {
+                panic!(e);
+            }
+        };
+        if rt == 15 {
+            if (address & 0b11) == 0 {
+                self.load_write_pc(address);
+            } else {
+                panic!("unpredictable");
+            }
+        } else {
+            self.set_reg(rt, Wrapping(data));
+        }
     }
 
     fn str_imm(
@@ -791,7 +824,7 @@ fn main() {
     let mut board = Board::new();
 
     match board.load_elf_from_path(
-        "/home/benjamin/gitlab/2300/labs/comp2300-2019-lab-2/.pio/build/disco_l476vg/firmware.elf",
+        "/home/benjamin/gitlab/comp2300-2019-assignment-1-copy/.pio/build/disco_l476vg/firmware.elf",
     ) {
         Ok(_) => {}
         Err(s) => {
@@ -799,6 +832,8 @@ fn main() {
             return;
         }
     };
+
+    // board.memory.print_raw_mem_dump(0x08000000, 30000);
 
     println!("\n{}\n", board);
     println!("finished init");
