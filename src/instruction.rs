@@ -97,8 +97,13 @@ pub enum Instruction {
         flags: bool,
     },
     StrReg {
-        val: u8,
-        address: u8,
+        // This is defined with add, index, and wback, but apparently
+        // only ever uses true, true, and false for their values.
+        rn: u8,
+        rt: u8,
+        rm: u8,
+        shift: u8,
+        shift_type: ShiftType,
     },
 
     AndImm {
@@ -391,7 +396,7 @@ pub fn add_with_carry(x: u32, y: u32, carry_in: u32) -> (u32, bool, bool) {
     return (result as u32, carry_out, overflow);
 }
 
-// NOTE: pc value is 4 bytes ahead of instruction start. Most instructions that use the PC
+// NOTE: pc value is 4 bytes ahead of instruction start. All(?) instructions that use the PC
 // assume this when calculating offsets (see page 124).
 fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
     let op1 = hword >> 14;
@@ -453,13 +458,18 @@ fn id_ldr_str_single(hword: u16) -> Instruction {
     let op_b = (hword >> 9) & 0b111;
     let op_c = bitset16(hword, 11);
 
+    let rm = ((hword >> 6) & 0b111) as u8;
+    let rn = ((hword >> 3) & 0b111) as u8;
+    let rt = (hword & 0b111) as u8;
+
     return match op_a {
         0b0101 => match op_b {
+            0b000 => {
+                // p388
+                Instruction::StrReg { rt, rm, rn, shift: 0, shift_type: ShiftType::LSL }
+            }
             0b100 => {
                 // p257
-                let rm = ((hword >> 6) & 0b111) as u8;
-                let rn = ((hword >> 3) & 0b111) as u8;
-                let rt = (hword & 0b111) as u8;
                 Instruction::LdrReg { rt, rm, rn, shift: 0, shift_type: ShiftType::LSL }
             }
             _ => Instruction::Unimplemented,
@@ -513,21 +523,23 @@ fn id_conditional_branch_supc(hword: u16, pc: u32) -> Instruction {
 }
 
 fn id_shift_add_sub_move_cmp(hword: u16) -> Instruction {
+    // p130
+    assert!((hword & (0b11 << 14)) == 0b00 << 14);
     let op1 = hword >> 12;
-    match op1 {
+    let rd = ((hword >> 8) & 0b111) as u8;
+    let val = (hword & 0xFF) as u32;
+    return match op1 {
         0b01 => {
             if (hword & (1 << 11)) > 0 {
                 id_add_sub(hword)
             } else {
-                Instruction::Undefined
+                Instruction::Unimplemented
             }
         }
         0b10 => {
             if (op1 & 0b100) > 0 {
-                Instruction::Undefined
+                Instruction::Unimplemented
             } else {
-                let rd = ((hword >> 8) & 0b111) as u8;
-                let val = (hword & 0xFF) as u32;
                 Instruction::MovImm {
                     rd,
                     val,
@@ -536,7 +548,14 @@ fn id_shift_add_sub_move_cmp(hword: u16) -> Instruction {
                 } // TODO: No flags in IT block
             }
         }
-        _ => Instruction::Undefined,
+        0b11 => {
+            if !bitset16(hword, 11) {
+                Instruction::AddImm { dest: rd, first: rd, val, flags: true }
+            } else {
+                Instruction::SubImm { dest: rd, first: rd, val, flags: true }
+            }
+        }
+        _ => Instruction::Unimplemented,
     }
 }
 

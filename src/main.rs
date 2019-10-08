@@ -175,6 +175,20 @@ impl fmt::Debug for MemoryBus {
     }
 }
 
+fn iter_print(data: &[u8], start_index: usize, amount: usize) {
+    let mut c = 16;
+    for i in start_index..(start_index + amount) {
+        if c == 0 {
+            c = 16;
+            print!("\n");
+        }
+        c -= 1;
+        let val = data[i];
+        print!("{:02X} ", val);
+    }
+    print!("\n");
+}
+
 impl MemoryBus {
     fn new() -> MemoryBus {
         return MemoryBus {
@@ -231,17 +245,11 @@ impl MemoryBus {
     }
 
     fn print_raw_mem_dump(&self, index: usize, length: usize) {
-        let mut c = 16;
-        for i in index..(index + length) {
-            if c == 0 {
-                c = 16;
-                print!("\n");
-            }
-            c -= 1;
-            let val = self.flash[i - 0x0800_0000];
-            print!("{:02X} ", val);
+        if index >= 0x2000_0000 {
+            iter_print(&self.data, index - 0x2000_0000, length);
+        } else if index >= 0x0800_0000 {
+            iter_print(&self.flash, index - 0x0800_0000, length);
         }
-        print!("\n");
     }
 
     fn get_instr_word(&self, address: u32) -> Result<u32, &str> {
@@ -294,6 +302,8 @@ impl MemoryBus {
             self.data[base + 1] = ((val >> 8) & 0xFF) as u8;
             self.data[base + 2] = ((val >> 16) & 0xFF) as u8;
             self.data[base + 3] = (val >> 24) as u8;
+        } else {
+            println!("Out of bounds memory write");
         }
     }
 }
@@ -366,6 +376,9 @@ impl Board {
             Instruction::AddReg { rd, rm, rn, flags } => {
                 self.add_reg(rd as usize, rm as usize, rn as usize, flags)
             }
+            Instruction::SubReg { rd, rm, rn, flags } => {
+                self.sub_reg(rd as usize, rm as usize, rn as usize, flags)
+            }
             Instruction::AndImm {
                 rd,
                 rn,
@@ -389,6 +402,7 @@ impl Board {
             Instruction::Push { registers } => self.push(registers),
             Instruction::AddSpImm { rd, val, flags } => self.add_sp_imm(rd as usize, val, flags),
             Instruction::LdrReg { rt, rn, rm, shift, shift_type } => self.ldr_reg(rt as usize, rn as usize, rm as usize, shift as u32, shift_type),
+            Instruction::StrReg { rt, rn, rm, shift, shift_type } => self.str_reg(rt as usize, rn as usize, rm as usize, shift as u32, shift_type),
             Instruction::Undefined => {}
             Instruction::Unpredictable => {
                 println!("Spooky");
@@ -645,26 +659,11 @@ impl Board {
         self.set_reg(dest, result);
     }
 
-    fn str_reg(&mut self, source: usize, address: usize) {
-        assert!(source <= 15 && address <= 15);
-
-        let address_val = self.read_reg(address).0;
-        if address_val < 0x20000000 || address_val > (0x20020000 - 4) {
-            println!("Invalid address {:#X} in r{}", address_val, address);
-            return;
-        }
-
-        let mut source_val = self.read_reg(source).0;
-
-        let pointer = (address_val - 0x20000000) as usize;
-
-        self.memory.data[pointer] = source_val as u8;
-        source_val = source_val >> 8;
-        self.memory.data[pointer + 1] = source_val as u8;
-        source_val = source_val >> 8;
-        self.memory.data[pointer + 2] = source_val as u8;
-        source_val = source_val >> 8;
-        self.memory.data[pointer + 3] = source_val as u8;
+    fn str_reg(&mut self, rt: usize, rn: usize, rm: usize, shift_amount: u32, shift_type: ShiftType) {
+        let offset = shift(self.read_reg(rm).0, shift_type, shift_amount, self.cpu.flags.c as u32);
+        let address = (self.read_reg(rn) + Wrapping(offset)).0;
+        self.memory.write_word(address, self.read_reg(rt).0);
+        self.memory.print_raw_mem_dump(0x2000_0000, 100);
     }
 
     fn ldr_lit(&mut self, dest: usize, address: u32) {
