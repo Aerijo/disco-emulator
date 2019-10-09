@@ -8,7 +8,7 @@ extern crate regex;
 
 mod instruction;
 
-use instruction::{bitset, bitset16, add_with_carry, shift, CarryChange, Condition, Instruction, RegFormat, ShiftType};
+use instruction::{bitset, bitset16, add_with_carry, shift, shift_c, CarryChange, Condition, Instruction, RegFormat, ShiftType};
 
 use goblin::elf::Elf;
 use regex::Regex;
@@ -503,26 +503,6 @@ impl Board {
         self.set_pc(self.read_pc() - if wide { 4 } else { 2 });
     }
 
-    fn mov_imm(&mut self, dest: u8, imm32: u32, setflags: bool, carry: CarryChange) {
-        // A7.7.76 p291
-        self.set_reg(dest, imm32);
-        if setflags {
-            self.cpu.flags.n = bitset(imm32, 31);
-            self.cpu.flags.z = imm32 == 0;
-            self.cpu.flags.c = match carry {
-                CarryChange::Same => self.cpu.flags.c,
-                CarryChange::Set => true,
-                CarryChange::Clear => false,
-            };
-            // v unchanged
-        }
-    }
-
-    fn branch(&mut self, address: u32) {
-        // A7.7.12 p205
-        self.branch_write_pc(address);
-    }
-
     fn branch_to(&mut self, address: u32) {
         // B1.4.7 p522
         self.set_pc(address);
@@ -561,86 +541,37 @@ impl Board {
         self.branch_write_pc(address);
     }
 
-    fn branch_exchange(&mut self, rm: u8) {
-        // A7.7.20 p215
-        self.bx_write_pc(self.cpu.read_reg(rm));
-    }
+    /**
+     * Instruction handlers
+     */
 
-    fn branch_cond(&mut self, address: u32, cond: Condition) {
-        // NOTE: condition checking is defined in A7.3.1 p178
-        // we will eventually need to generalise it (for IT blocks),
-        // but for now we dedicate this separate function for conditional
-        // branches.
-
-        // A7.7.12 p205 (see self.branch)
-        if self.cpu.check_condition(cond) {
-            self.branch_write_pc(address);
-        }
-    }
-
-    fn branch_with_link(&mut self, address: u32) {
-        // NOTE: To simplify the simulator, we allow skipping
-        // certain functions. E.g., we don't need to set the clock
-        // speed.
-        println!("BMAP: {:?}", self.branch_map);
-        match self.branch_map.get(&address) {
-            Some(b) if !b => {
-                println!("Skipping branch with link");
-                return;
-            }
-            _ => {}
-        }
-
-        // A7.7.18 p213
-        self.set_lr(self.read_pc() | 0b1);
-        self.branch(address);
-    }
-
-    fn and_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange) {
-        // A7.7.8 p200
-        let result = self.read_reg(rn) & imm32;
+    fn adc_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
+        // A7.7.1
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), imm32, self.cpu.flags.c as u32);
         self.set_reg(rd, result);
-
         if setflags {
             self.cpu.flags.n = bitset(result, 31);
             self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = match carry {
-                CarryChange::Same => self.cpu.flags.c,
-                CarryChange::Set => true,
-                CarryChange::Clear => false,
-            };
-            // v unchanged
+            self.cpu.flags.c = carry;
+            self.cpu.flags.v = overflow;
         }
     }
 
-    fn cmp_reg(&mut self, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32) {
-        // A7.7.28 p224
+    fn adc_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
+        // A7.7.2
         let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
-        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !shifted, 1);
-        self.cpu.flags.n = bitset(result, 31);
-        self.cpu.flags.z = result == 0;
-        self.cpu.flags.c = carry;
-        self.cpu.flags.v = overflow;
-    }
-
-    fn mov_reg(&mut self, rd: u8, rm: u8, setflags: bool) {
-        // A7.7.77 p293
-        let result = self.read_reg(rm);
-        if rd == 15 {
-            self.alu_write_pc(result);
-        } else {
-            self.set_reg(rd, result);
-            if setflags {
-                self.cpu.flags.n = bitset(result, 31);
-                self.cpu.flags.z = result == 0;
-                // c unchanged
-                // v unchanged
-            }
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), shifted, self.cpu.flags.c as u32);
+        self.set_reg(rd, result);
+        if setflags {
+            self.cpu.flags.n = bitset(result, 31);
+            self.cpu.flags.z = result == 0;
+            self.cpu.flags.c = carry;
+            self.cpu.flags.v = overflow;
         }
     }
 
     fn add_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
-        // A7.7.3 p188
+        // A7.7.3
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), imm32, 0);
         self.set_reg(rd, result);
         if setflags {
@@ -652,7 +583,7 @@ impl Board {
     }
 
     fn add_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
-        // A7.7.4 p190
+        // A7.7.4
         let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), shifted, 0);
         if rd == 15 {
@@ -668,9 +599,9 @@ impl Board {
         }
     }
 
-    fn sub_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
-        // A7.7.171 p397
-        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !imm32, 1);
+    fn add_sp_imm(&mut self, rd: u8, imm32: u32, setflags: bool) {
+        // A7.7.5
+        let (result, carry, overflow) = add_with_carry(self.read_sp(), imm32, 0);
         self.set_reg(rd, result);
         if setflags {
             self.cpu.flags.n = bitset(result, 31);
@@ -680,45 +611,123 @@ impl Board {
         }
     }
 
-    fn sub_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
-        // A7.7.172 p399
+    fn add_sp_reg(&mut self, rd: u8, rm: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
+        // A7.7.6
+        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let (result, carry, overflow) = add_with_carry(self.read_sp(), shifted, 0);
+        if rd == 15 {
+            self.alu_write_pc(result);
+        } else {
+            self.set_reg(rd, result);
+            if setflags {
+                self.cpu.flags.n = bitset(result, 31);
+                self.cpu.flags.z = result == 0;
+                self.cpu.flags.c = carry;
+                self.cpu.flags.v = overflow;
+            }
+        }
+    }
+
+    fn adr(&mut self, rd: u8, address: u32) {
+        // A7.7.7
+        // NOTE: The offset calculation is determined by PC, so we precalculate it in the Instruction.
+        self.set_reg(rd, address);
+    }
+
+    fn and_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange) {
+        // A7.7.8
+        let result = self.read_reg(rn) & imm32;
+        self.set_reg(rd, result);
+
+        if setflags {
+            self.cpu.flags.n = bitset(result, 31);
+            self.cpu.flags.z = result == 0;
+            self.cpu.flags.c = match carry {
+                CarryChange::Same => self.cpu.flags.c,
+                CarryChange::Set => true,
+                CarryChange::Clear => false,
+            };
+            // v unchanged
+        }
+    }
+
+    fn and_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
+        // A7.7.9
+        let (shifted, carry) = shift_c(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let result = self.read_reg(rn) & shifted;
+        self.set_reg(rd, result);
+        if setflags {
+            self.cpu.flags.n = bitset(result, 31);
+            self.cpu.flags.z = result == 0;
+            self.cpu.flags.c = carry;
+            // v unchanged
+        }
+    }
+
+    fn asr_imm(&mut self, rd: u8, rm: u8, shift_n: u32, setflags: bool) {
+        // A7.7.10
+        let (result, carry) = shift_c(self.read_reg(rm), ShiftType::ASR, shift_n, self.cpu.flags.c as u32);
+        self.set_reg(rd, result);
+        if setflags {
+            self.cpu.flags.n = bitset(result, 31);
+            self.cpu.flags.z = result == 0;
+            self.cpu.flags.c = carry;
+            // v unchanged
+        }
+    }
+
+    fn branch(&mut self, address: u32) {
+        // A7.7.12
+        self.branch_write_pc(address);
+    }
+
+    fn branch_cond(&mut self, address: u32, cond: Condition) {
+        // NOTE: condition checking is defined in A7.3.1 p178
+        // we will eventually need to generalise it (for IT blocks),
+        // but for now we dedicate this separate function for conditional
+        // branches.
+
+        // A7.7.12 (see self.branch)
+        if self.cpu.check_condition(cond) {
+            self.branch_write_pc(address);
+        }
+    }
+
+    fn branch_with_link(&mut self, address: u32) {
+        // A7.7.18
+        // NOTE: To simplify the simulator, we allow skipping
+        // certain functions. E.g., we don't need to set the clock
+        // speed.
+        println!("BMAP: {:?}", self.branch_map);
+        match self.branch_map.get(&address) {
+            Some(b) if !b => {
+                println!("Skipping branch with link");
+                return;
+            }
+            _ => {}
+        }
+
+        self.set_lr(self.read_pc() | 0b1);
+        self.branch(address);
+    }
+
+    fn branch_exchange(&mut self, rm: u8) {
+        // A7.7.20
+        self.bx_write_pc(self.cpu.read_reg(rm));
+    }
+
+    fn cmp_reg(&mut self, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32) {
+        // A7.7.28
         let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !shifted, 1);
-        self.set_reg(rd, result);
-        if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
-            self.cpu.flags.v = overflow;
-        }
-    }
-
-    fn str_reg(&mut self, rt: u8, rn: u8, rm: u8, shift_t: ShiftType, shift_n: u32) {
-        // A7.7.159 p383
-        let offset = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
-        let address = self.read_reg(rn).wrapping_add(offset);
-        self.memory.write_word(address, self.read_reg(rt));
-        self.memory.print_raw_mem_dump(0x2000_0000, 100);
-    }
-
-    fn ldr_lit(&mut self, rt: u8, address: u32) {
-        // A7.7.43 p245
-        // NOTE: As PC is fixed for given instruction, we calculate the address
-        // directly when building the instruction
-        let data = self.memory.get_word(address).unwrap(); // TODO: Proper error handling
-        if rt == 15 {
-            if (address & 0b11) == 0 {
-                self.load_write_pc(data);
-            } else {
-                panic!("Unpredictable");
-            }
-        } else {
-            self.set_reg(rt, data);
-        }
+        self.cpu.flags.n = bitset(result, 31);
+        self.cpu.flags.z = result == 0;
+        self.cpu.flags.c = carry;
+        self.cpu.flags.v = overflow;
     }
 
     fn ldr_imm(&mut self, rt: u8, rn: u8, offset: i32, index: bool, wback: bool) {
-        // A7.7.42 p243
+        // A7.7.42
         // NOTE: On making the Instruction, we use a signed offset instead of a separate add bool
         let offset_address = self.read_reg(rn).wrapping_add(offset as u32);
         let address = if index { offset_address } else { self.read_reg(rn) };
@@ -735,8 +744,24 @@ impl Board {
         }
     }
 
+    fn ldr_lit(&mut self, rt: u8, address: u32) {
+        // A7.7.43
+        // NOTE: As PC is fixed for given instruction, we calculate the address
+        // directly when building the instruction
+        let data = self.memory.get_word(address).unwrap(); // TODO: Proper error handling
+        if rt == 15 {
+            if (address & 0b11) == 0 {
+                self.load_write_pc(data);
+            } else {
+                panic!("Unpredictable");
+            }
+        } else {
+            self.set_reg(rt, data);
+        }
+    }
+
     fn ldr_reg(&mut self, rt: u8, rn: u8, rm: u8, shift_t: ShiftType, shift_n: u32) {
-        // A7.7.44 p247
+        // A7.7.44
         let offset = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
         let offset_address = self.read_reg(rn).wrapping_add(offset);
         let address = offset_address; // NOTE: This is supposed to be conditional on 'index', but 'index' is always true
@@ -753,17 +778,39 @@ impl Board {
         }
     }
 
-    fn str_imm(&mut self, rt: u8, rn: u8, offset: i32, index: bool, wback: bool) {
-        // A7.7.158 p381
-        // NOTE: On making the Instruction, we use a signed offset instead of a separate add bool
-        let offset_address = self.read_reg(rn).wrapping_add(offset as u32);
-        let address = if index { offset_address } else { self.read_reg(rn) };
-        self.memory.write_word(address, self.read_reg(rt));
-        if wback { self.set_reg(rn, offset_address); }
+    fn mov_imm(&mut self, rd: u8, imm32: u32, setflags: bool, carry: CarryChange) {
+        // A7.7.76
+        self.set_reg(rd, imm32);
+        if setflags {
+            self.cpu.flags.n = bitset(imm32, 31);
+            self.cpu.flags.z = imm32 == 0;
+            self.cpu.flags.c = match carry {
+                CarryChange::Same => self.cpu.flags.c,
+                CarryChange::Set => true,
+                CarryChange::Clear => false,
+            };
+            // v unchanged
+        }
+    }
+
+    fn mov_reg(&mut self, rd: u8, rm: u8, setflags: bool) {
+        // A7.7.77
+        let result = self.read_reg(rm);
+        if rd == 15 {
+            self.alu_write_pc(result);
+        } else {
+            self.set_reg(rd, result);
+            if setflags {
+                self.cpu.flags.n = bitset(result, 31);
+                self.cpu.flags.z = result == 0;
+                // c unchanged
+                // v unchanged
+            }
+        }
     }
 
     fn push(&mut self, registers: u16) {
-        // A7.7.99 p318
+        // A7.7.99
         let mut sp = self.read_sp();
         for i in (0..=14u8).rev() {
             if !bitset16(registers, i.into()) {
@@ -776,9 +823,39 @@ impl Board {
         self.set_sp(sp);
     }
 
-    fn add_sp_imm(&mut self, rd: u8, imm32: u32, setflags: bool) {
-        // A7.7.5 p192
-        let (result, carry, overflow) = add_with_carry(self.read_sp(), imm32, 0);
+    fn str_imm(&mut self, rt: u8, rn: u8, offset: i32, index: bool, wback: bool) {
+        // A7.7.158
+        // NOTE: On making the Instruction, we use a signed offset instead of a separate add bool
+        let offset_address = self.read_reg(rn).wrapping_add(offset as u32);
+        let address = if index { offset_address } else { self.read_reg(rn) };
+        self.memory.write_word(address, self.read_reg(rt));
+        if wback { self.set_reg(rn, offset_address); }
+    }
+
+    fn str_reg(&mut self, rt: u8, rn: u8, rm: u8, shift_t: ShiftType, shift_n: u32) {
+        // A7.7.159
+        let offset = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let address = self.read_reg(rn).wrapping_add(offset);
+        self.memory.write_word(address, self.read_reg(rt));
+        self.memory.print_raw_mem_dump(0x2000_0000, 100);
+    }
+
+    fn sub_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
+        // A7.7.171
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !imm32, 1);
+        self.set_reg(rd, result);
+        if setflags {
+            self.cpu.flags.n = bitset(result, 31);
+            self.cpu.flags.z = result == 0;
+            self.cpu.flags.c = carry;
+            self.cpu.flags.v = overflow;
+        }
+    }
+
+    fn sub_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
+        // A7.7.172
+        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !shifted, 1);
         self.set_reg(rd, result);
         if setflags {
             self.cpu.flags.n = bitset(result, 31);
