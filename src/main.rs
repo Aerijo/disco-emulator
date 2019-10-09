@@ -8,7 +8,7 @@ extern crate regex;
 
 mod instruction;
 
-use instruction::{bitset, bitset16, add_with_carry, shift, shift_c, CarryChange, Condition, Instruction, RegFormat, ShiftType};
+use instruction::{bitset, bitset16, add_with_carry, shift, shift_c, align, CarryChange, Condition, Instruction, RegFormat, ShiftType};
 
 use goblin::elf::Elf;
 use regex::Regex;
@@ -41,6 +41,11 @@ impl fmt::Display for Flags {
         let sat = if self.q { 'Q' } else { '_' };
         return write!(f, "xPSR: {}{}{}{}{}", neg, zero, carry, over, sat);
     }
+}
+
+#[derive(Debug)]
+enum AccessType {
+    Normal,
 }
 
 #[derive(Debug)]
@@ -154,8 +159,14 @@ impl fmt::Display for CPU {
     }
 }
 
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum Location {
+    Flash(usize),
+    Ram(usize),
+}
+
 struct MemoryBus {
-    flash: [u8; 1024 * 1024 + 4],
+    flash: [u8; 1024 * 1024],
     data: [u8; 128 * 1024],
 }
 
@@ -173,16 +184,34 @@ fn iter_print(data: &[u8], start_index: usize, amount: usize) {
             print!("\n");
         }
         c -= 1;
-        let val = data[i];
-        print!("{:02X} ", val);
+        print!("{:02X} ", data[i]);
     }
     print!("\n");
+}
+
+fn read_value(bank: &[u8], base: usize, size: usize) -> Result<u32, String> {
+    assert!(size == 1 || size == 2 || size == 4);
+    let mut result: u32 = 0;
+    for i in (0..size).rev() {
+        result = result << 8;
+        result += bank[base + i] as u32;
+    }
+    return Ok(result);
+}
+
+fn write_value(mut value: u32, bank: &mut[u8], base: usize, size: usize) -> Result<(), String> {
+    assert!(size == 1 || size == 2 || size == 4);
+    for i in 0..size {
+        bank[base + i] = (value & 0xFF) as u8;
+        value = value >> 8;
+    }
+    return Ok(());
 }
 
 impl MemoryBus {
     fn new() -> MemoryBus {
         return MemoryBus {
-            flash: [0xFF; 1024 * 1024 + 4],
+            flash: [0xFF; 1024 * 1024],
             data: [0xFF; 128 * 1024],
         };
     }
@@ -242,8 +271,8 @@ impl MemoryBus {
         }
     }
 
-    fn get_instr_word(&self, address: u32) -> Result<u32, &str> {
-        if 0x08000000 <= address && address <= 0x08000000 + (self.flash.len() as u32 - 4) {
+    fn get_instr_word(&self, address: u32) -> Result<u32, String> {
+        if 0x08000000 <= address && address <= 0x08000000 + (self.flash.len() as u32) {
             let base = (address - 0x08000000) as usize;
             let b1 = self.flash[base] as u32;
             let b2 = self.flash[base + 1] as u32;
@@ -252,62 +281,84 @@ impl MemoryBus {
             return Ok((b2 << 24) + (b1 << 16) + (b4 << 8) + b3);
         }
 
-        return Err("Out of bounds access");
+        return Err(String::from("Out of bounds access"));
     }
 
-    fn get_flash_capacity(&self) -> u32 {
-        return self.flash.len() as u32 - 4;
+    fn read_mem_a(&self, address: u32, size: usize) -> Result<u32, String> {
+        // B2.3.4 p583
+        return self.read_mem_a_with_priv(address, size, AccessType::Normal);
     }
 
-    fn get_data_capacity(&self) -> u32 {
-        return self.data.len() as u32;
+    fn read_mem_a_with_priv(&self, address: u32, size: usize, _access_type: AccessType) -> Result<u32, String> {
+        // B2.3.4 p583
+        if address != align(address, size as u32) {
+            // Set UFSR.UNALIGNED = true;
+            panic!("UsageFault");
+        }
+
+        // let memaddrdesc = validate_address(address, access_type, false); // TODO
+        let location = self.address_to_physical(address)?;
+        return match location {
+            Location::Flash(i) => read_value(&self.flash, i, size),
+            Location::Ram(i) => read_value(&self.data, i, size),
+        };
+    }
+
+    fn read_mem_u(&self, address: u32, size: usize) -> Result<u32, String> {
+        // B2.3.5 p584
+        return self.read_mem_u_with_priv(address, size, AccessType::Normal);
+    }
+
+    fn read_mem_u_with_priv(&self, address: u32, size: usize, access_type: AccessType) -> Result<u32, String> {
+        // B2.3.5 p585
+        if address == align(address, size as u32) {
+            return self.read_mem_a_with_priv(address, size, access_type);
+        } else if /* CCr.UNALIGN_TRP */ false {
+            // USFR.UNALIGNED = true;
+            panic!("UsageFault");
+        } else {
+            let location = self.address_to_physical(address)?;
+            return match location {
+                Location::Flash(i) => read_value(&self.flash, i, size),
+                Location::Ram(i) => read_value(&self.data, i, size),
+            };
+        }
+    }
+
+    fn address_to_physical(&self, address: u32) -> Result<Location, String> {
+        let address = address as usize;
+        let location = match address {
+            0x0000_0000..=0x000F_FFFF => Location::Flash(address),
+            0x0800_0000..=0x080F_FFFF => Location::Flash(address - 0x0800_0000),
+            0x2000_0000..=0x2001_FFFF => Location::Ram(address - 0x2000_0000),
+            _ => {
+                return Err(format!("Out of bounds memory access at {:#010X}", address));
+            }
+        };
+        return Ok(location);
     }
 
     fn read_word(&self, address: u32) -> Result<u32, String> {
-        // TODO: Map 0x0--something to 0x0800_0000--something
+        return self.read_mem_u(address, 4);
+    }
 
-        if 0x0800_0000 <= address && address <= 0x0800_0000 + self.get_flash_capacity() - 4 {
-            let base = (address - 0x0800_0000) as usize;
-            let b1 = self.flash[base] as u32;
-            let b2 = self.flash[base + 1] as u32;
-            let b3 = self.flash[base + 2] as u32;
-            let b4 = self.flash[base + 3] as u32;
-            return Ok((b4 << 24) + (b3 << 16) + (b2 << 8) + b1);
-        } else if 0x2000_0000 <= address && address <= 0x2000_0000 + self.get_data_capacity() - 4 {
-            let base = (address - 0x2000_0000) as usize;
-            let b1 = self.data[base] as u32;
-            let b2 = self.data[base + 1] as u32;
-            let b3 = self.data[base + 2] as u32;
-            let b4 = self.data[base + 3] as u32;
-            return Ok((b4 << 24) + (b3 << 16) + (b2 << 8) + b1);
-        } else {
-            return Err(String::from("Out of bounds access"));
-        };
+    fn read_halfword(&self, address: u32) -> Result<u16, String> {
+        return Ok(self.read_mem_u(address, 2)? as u16);
     }
 
     fn read_byte(&self, address: u32) -> Result<u8, String> {
-        return if 0x0800_0000 <= address && address <= 0x0800_0000 + self.get_flash_capacity() - 4 {
-            Ok(self.flash[(address - 0x0800_0000) as usize])
-        } else if 0x2000_0000 <= address && address <= 0x2000_0000 + self.get_data_capacity() - 4 {
-            Ok(self.flash[(address - 0x2000_0000) as usize])
-        } else {
-            Err(String::from("Out of bounds access"))
-        };
+        return Ok(self.read_mem_u(address, 1)? as u8);
     }
 
     fn read_byte_unpriv(&self, address: u32) -> Result<u8, String> {
         return self.read_byte(address);
     }
 
-    fn write_word(&mut self, address: u32, val: u32) {
-        if 0x2000_0000 <= address && address <= 0x2000_0000 + self.get_data_capacity() - 4 {
-            let base = (address - 0x2000_0000) as usize;
-            self.data[base] = (val & 0xFF) as u8;
-            self.data[base + 1] = ((val >> 8) & 0xFF) as u8;
-            self.data[base + 2] = ((val >> 16) & 0xFF) as u8;
-            self.data[base + 3] = (val >> 24) as u8;
-        } else {
-            println!("Out of bounds memory write");
+    fn write_word(&mut self, address: u32, val: u32) -> Result<(), String> {
+        let location = self.address_to_physical(address)?;
+        return match location {
+            Location::Flash(_) => Err(String::from("Cannot write to Flash memory")),
+            Location::Ram(i) => write_value(val, &mut self.data, i, 4),
         }
     }
 }
@@ -561,6 +612,10 @@ impl Board {
 
     fn clear_exclusive_local(&mut self, _processor_id: u32) {
         // B2.3.7 p587
+        // TODO
+    }
+
+    fn set_exclusive_monitors(&mut self, _address: u32, _length: u32) {
         // TODO
     }
 
@@ -955,7 +1010,8 @@ impl Board {
         let mut address = self.read_reg(rn);
         for i in 0..=14u8 {
             if bitset(registers, i.into()) {
-                self.write_reg(i, self.memory.read_word(address).unwrap());
+                let val = self.memory.read_word(address).unwrap();
+                self.write_reg(i, val);
                 address += 4;
             }
         }
@@ -1075,6 +1131,70 @@ impl Board {
         if wback { self.write_reg(rn, offset_address); }
     }
 
+    fn ldrd_lit(&mut self, rt: u8, rt2: u8, offset: i32) {
+        // A7.7.51
+        if (self.read_pc() & 0b11) != 0 {
+            panic!("Unpredictable");
+        }
+        let address = self.read_pc().wrapping_add(offset as u32);
+        self.write_reg(rt, self.memory.read_word(address).unwrap());
+        self.write_reg(rt2, self.memory.read_word(address + 4).unwrap());
+    }
+
+    fn ldrex(&mut self, rt: u8, rn: u8, imm32: u32) {
+        // A7.7.52
+        let address = self.read_reg(rn).wrapping_add(imm32);
+        self.set_exclusive_monitors(address, 4);
+        self.write_reg(rt, self.memory.read_word(address).unwrap());
+    }
+
+    fn ldrexb(&mut self, rt: u8, rn: u8) {
+        // A7.7.53
+        let address = self.read_reg(rn);
+        self.set_exclusive_monitors(address, 1);
+        self.write_reg(rt, self.memory.read_byte(address).unwrap() as u32);
+    }
+
+    fn ldrexh(&mut self, rt: u8, rn: u8) {
+        // A7.7.53
+        let address = self.read_reg(rn);
+        self.set_exclusive_monitors(address, 2);
+        self.write_reg(rt, self.memory.read_halfword(address).unwrap() as u32);
+    }
+
+    fn ldrh_imm(&mut self, rt: u8, rn: u8, offset: i32, index: bool, wback: bool) {
+        // A7.7.55
+        let offset_address = self.read_reg(rn).wrapping_add(offset as u32);
+        let address = if index { offset_address } else { self.read_reg(rn) };
+        if wback { self.write_reg(rn, offset_address); }
+        self.write_reg(rt, self.memory.read_mem_u(address, 2).unwrap());
+    }
+
+    fn ldrh_lit(&mut self, rt: u8, address: u32) {
+        // A7.7.56
+        self.write_reg(rt, self.memory.read_mem_u(address, 2).unwrap());
+    }
+
+    fn ldrh_reg(&mut self, rt: u8, rm: u8, rn: u8, shift_n: u32) {
+        // A7.7.57
+        let offset = shift(self.read_reg(rm), ShiftType::LSL, shift_n, self.cpu.flags.c as u32);
+        let address = self.read_reg(rn).wrapping_add(offset);
+        let data = self.memory.read_mem_u(address, 2).unwrap();
+        self.write_reg(rt, data);
+    }
+
+    fn lsl_imm(&mut self, rd: u8, rm: u8, shift_n: u32, setflags: bool) {
+        // A7.7.68
+        let (result, carry) = shift_c(self.read_reg(rm), ShiftType::LSL, shift_n, self.cpu.flags.c as u32);
+        self.write_reg(rd, result);
+        if setflags {
+            self.cpu.flags.n = bitset(result, 31);
+            self.cpu.flags.z = result == 0;
+            self.cpu.flags.c = carry;
+            // v unchanged
+        }
+    }
+
     fn mov_imm(&mut self, rd: u8, imm32: u32, setflags: bool, carry: CarryChange) {
         // A7.7.76
         self.write_reg(rd, imm32);
@@ -1113,7 +1233,7 @@ impl Board {
             if !bitset16(registers, i.into()) {
                 continue;
             }
-            self.memory.write_word(sp, self.read_reg(i));
+            self.memory.write_word(sp, self.read_reg(i)).unwrap();
             sp -= 4;
         }
 
@@ -1125,7 +1245,7 @@ impl Board {
         // NOTE: On making the Instruction, we use a signed offset instead of a separate add bool
         let offset_address = self.read_reg(rn).wrapping_add(offset as u32);
         let address = if index { offset_address } else { self.read_reg(rn) };
-        self.memory.write_word(address, self.read_reg(rt));
+        self.memory.write_word(address, self.read_reg(rt)).unwrap();
         if wback { self.write_reg(rn, offset_address); }
     }
 
@@ -1133,7 +1253,7 @@ impl Board {
         // A7.7.159
         let offset = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
         let address = self.read_reg(rn).wrapping_add(offset);
-        self.memory.write_word(address, self.read_reg(rt));
+        self.memory.write_word(address, self.read_reg(rt)).unwrap();
         self.memory.print_raw_mem_dump(0x2000_0000, 100);
     }
 
@@ -1217,7 +1337,7 @@ fn main() {
     println!("\n{}\n", board);
     println!("finished init");
 
-    let mut cont = true;
+    let mut cont = false;
     loop {
         if !cont {
             print!("press enter to continue");
