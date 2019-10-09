@@ -1,8 +1,6 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-use std::num::Wrapping;
-
 #[derive(Copy, Clone, Debug)]
 pub enum RegFormat {
     Bin, // binary
@@ -76,25 +74,27 @@ pub enum Instruction {
     MovReg {
         to: u8,
         from: u8,
-        flags: bool,
+        setflags: bool,
     },
     AddImm {
         dest: u8,
         first: u8,
         val: u32,
-        flags: bool,
+        setflags: bool,
     },
     SubImm {
         dest: u8,
         first: u8,
         val: u32,
-        flags: bool,
+        setflags: bool,
     },
     SubReg {
         rd: u8,
         rm: u8,
         rn: u8,
-        flags: bool,
+        shift_t: ShiftType,
+        shift_n: u32,
+        setflags: bool,
     },
     StrReg {
         // This is defined with add, index, and wback, but apparently
@@ -102,15 +102,15 @@ pub enum Instruction {
         rn: u8,
         rt: u8,
         rm: u8,
-        shift: u8,
-        shift_type: ShiftType,
+        shift_t: ShiftType,
+        shift_n: u32,
     },
 
     AndImm {
         rd: u8,
         rn: u8,
         val: u32,
-        flags: bool,
+        setflags: bool,
         carry: CarryChange,
     },
 
@@ -131,12 +131,14 @@ pub enum Instruction {
         rd: u8,
         rm: u8,
         rn: u8,
-        flags: bool,
+        shift_t: ShiftType,
+        shift_n: u32,
+        setflags: bool,
     },
     MovImm {
         rd: u8,
         val: u32,
-        flags: bool,
+        setflags: bool,
         carry: CarryChange,
     },
     Stm {
@@ -168,11 +170,13 @@ pub enum Instruction {
     CmpReg {
         rm: u8,
         rn: u8,
+        shift_t: ShiftType,
+        shift_n: u32,
     },
     AddSpImm {
         rd: u8,
         val: u32,
-        flags: bool,
+        setflags: bool,
     },
 
     LdrLit {
@@ -182,16 +186,14 @@ pub enum Instruction {
     LdrImm {
         rn: u8,
         rt: u8,
-        offset: u16, /* 12 bits + sign bit max */
-        add: bool,
+        offset: i32,
         index: bool,
         wback: bool,
     },
     StrImm {
         rn: u8,
         rt: u8,
-        offset: u16,
-        add: bool,
+        offset: i32,
         index: bool,
         wback: bool,
     },
@@ -201,13 +203,13 @@ pub enum Instruction {
         rn: u8,
         rt: u8,
         rm: u8,
-        shift: u8,
-        shift_type: ShiftType,
+        shift_t: ShiftType,
+        shift_n: u32,
     },
     Ldrt {
         rn: u8,
         rt: u8,
-        offset: u16,
+        offset: i32,
     },
 
     TstReg {
@@ -432,7 +434,7 @@ fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
                 return Instruction::AddSpImm {
                     rd,
                     val,
-                    flags: false,
+                    setflags: false,
                 };
             }
             Instruction::Undefined
@@ -466,26 +468,18 @@ fn id_ldr_str_single(hword: u16) -> Instruction {
         0b0101 => match op_b {
             0b000 => {
                 // p388
-                Instruction::StrReg { rt, rm, rn, shift: 0, shift_type: ShiftType::LSL }
+                Instruction::StrReg { rt, rm, rn, shift_t: ShiftType::LSL, shift_n: 0 }
             }
             0b100 => {
-                // p257
-                Instruction::LdrReg { rt, rm, rn, shift: 0, shift_type: ShiftType::LSL }
+                // p257 T1
+                Instruction::LdrReg { rt, rm, rn, shift_t: ShiftType::LSL, shift_n: 0 }
             }
             _ => Instruction::Unimplemented,
         },
         0b0110 if op_c => {
-            let rn = ((hword >> 3) & 0b111) as u8;
-            let rt = (hword & 0b111) as u8;
-            let offset = ((hword >> 6) & 0b1_1111) << 2;
-            Instruction::LdrImm {
-                rn,
-                rt,
-                offset,
-                add: true,
-                index: true,
-                wback: false,
-            }
+            // p243 T1
+            let offset = ((hword >> 4) & (0b1_1111 << 2)) as i32;
+            Instruction::LdrImm { rn, rt, offset, index: true, wback: false }
         }
         _ => Instruction::Unimplemented,
     };
@@ -543,16 +537,16 @@ fn id_shift_add_sub_move_cmp(hword: u16) -> Instruction {
                 Instruction::MovImm {
                     rd,
                     val,
-                    flags: true,
+                    setflags: true,
                     carry: CarryChange::Same,
-                } // TODO: No flags in IT block
+                } // TODO: No setflags in IT block
             }
         }
         0b11 => {
             if !bitset16(hword, 11) {
-                Instruction::AddImm { dest: rd, first: rd, val, flags: true }
+                Instruction::AddImm { dest: rd, first: rd, val, setflags: true }
             } else {
-                Instruction::SubImm { dest: rd, first: rd, val, flags: true }
+                Instruction::SubImm { dest: rd, first: rd, val, setflags: true }
             }
         }
         _ => Instruction::Unimplemented,
@@ -565,15 +559,18 @@ fn id_add_sub(hword: u16) -> Instruction {
     let rd = (hword & 0b111) as u8;
     return match (hword >> 9) & 0b11 {
         0b00 => Instruction::AddReg {
+            // p190 T1
             rd,
             rm,
             rn,
-            flags: true,
+            shift_t: ShiftType::LSL,
+            shift_n: 0,
+            setflags: true,
         },
         0b01 => Instruction::Unimplemented,
         0b10 => Instruction::Unimplemented,
         0b11 => Instruction::Unimplemented,
-        _ => panic!("oops"),
+        _ => panic!(),
     };
 }
 
@@ -582,9 +579,10 @@ fn id_data_processing(hword: u16) -> Instruction {
     let op = (hword >> 6) & 0b1111;
     return match op {
         0b1010 => {
+            // p222 T1
             let rn = (hword & 0b111) as u8;
             let rm = ((hword >> 3) & 0b111) as u8;
-            Instruction::CmpReg { rm, rn }
+            Instruction::CmpReg { rm, rn, shift_t: ShiftType::LSL, shift_n: 0 }
         }
         _ => Instruction::Unimplemented,
     };
@@ -597,22 +595,26 @@ fn id_special_data_branch(hword: u16) -> Instruction {
     let rn = (((hword >> 4) & (1 << 3)) + (hword & 0b111)) as u8;
     return match op {
         0b000 | 0b001 => Instruction::AddReg {
+            // p190 T2
             rd: rn,
             rm,
             rn,
-            flags: false,
+            shift_t: ShiftType::LSL,
+            shift_n: 0,
+            setflags: false,
         },
         0b010 => {
             if bitset16(hword, 6) {
                 Instruction::Unpredictable
             } else {
-                Instruction::CmpReg { rm, rn }
+                // p222 T2
+                Instruction::CmpReg { rm, rn, shift_t: ShiftType::LSL, shift_n: 0 }
             }
         }
         0b100 | 0b101 => Instruction::MovReg {
             to: rn,
             from: rm,
-            flags: false,
+            setflags: false,
         },
         0b110 => Instruction::BranchExchange { rm },
         _ => Instruction::Unimplemented,
@@ -755,7 +757,7 @@ fn id_data_processing_shifted(word: u32) -> Instruction {
                             Instruction::MovReg {
                                 to: rd,
                                 from: rm,
-                                flags: s,
+                                setflags: s,
                             }
                         } else {
                             Instruction::Unimplemented // LSL (imm)
@@ -801,7 +803,7 @@ fn id_branch_and_misc(word: u32, pc: u32) -> Instruction {
             offset += 0xFF << 24;
         }
 
-        let address = (Wrapping(pc) + Wrapping(offset)).0;
+        let address = pc.wrapping_add(offset);
 
         return if bitset(word, 14) {
             Instruction::LinkedBranch { address }
@@ -826,7 +828,7 @@ fn id_data_proc_modified_immediate(word: u32) -> Instruction {
         0b0000 if !rd_is_pc => {
             let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
             let (imm32, carry) = thumb_expand_imm_c(imm12);
-            Instruction::AndImm { rd, rn, val: imm32, flags: bitset(word, 20), carry }
+            Instruction::AndImm { rd, rn, val: imm32, setflags: bitset(word, 20), carry }
         }
         0b0010 if rn_is_pc => {
             let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
@@ -834,7 +836,7 @@ fn id_data_proc_modified_immediate(word: u32) -> Instruction {
             Instruction::MovImm {
                 rd,
                 val: imm32,
-                flags: bitset(word, 20),
+                setflags: bitset(word, 20),
                 carry,
             }
         }
@@ -845,7 +847,7 @@ fn id_data_proc_modified_immediate(word: u32) -> Instruction {
                 dest: rd,
                 first: rn,
                 val: imm32,
-                flags: bitset(word, 20),
+                setflags: bitset(word, 20),
             }
         }
         _ => Instruction::Unimplemented,
@@ -870,7 +872,7 @@ fn id_data_proc_plain_binary_immediate(word: u32) -> Instruction {
             Instruction::MovImm {
                 rd,
                 val: imm32,
-                flags: false,
+                setflags: false,
                 carry: CarryChange::Same,
             }
         }
@@ -902,23 +904,26 @@ fn id_store_single(word: u32) -> Instruction {
 
     return match op1 {
         0b110 => {
-            let offset = (word & 0xFFF) as u16;
+            // p381 T3
+            let offset = (word & 0xFFF) as i32;
             Instruction::StrImm {
                 rn,
                 rt,
                 offset,
-                add: true,
                 index: true,
                 wback: false,
             }
         }
         0b010 if op2 => {
-            let offset = (word & 0xFF) as u16;
+            // p381 T4
+            let mut offset = (word & 0xFF) as i32;
+            if !bitset(word, 9) {
+                offset = -offset;
+            }
             Instruction::StrImm {
                 rn,
                 rt,
                 offset,
-                add: bitset(word, 9),
                 index: bitset(word, 10),
                 wback: bitset(word, 8),
             }
@@ -940,7 +945,7 @@ fn id_load_word(word: u32, pc: u32) -> Instruction {
     let op2 = (word >> 6) & 0b11_1111;
     let rn = ((word >> 16) & 0b1111) as u8;
     let rt = ((word >> 12) & 0b1111) as u8;
-    let offset = (word & 0b1111_1111_1111) as u16;
+    let offset = (word & 0b1111_1111_1111) as i32;
 
     if (op1 & 0b10) > 0 {
         return Instruction::Undefined;
@@ -960,11 +965,11 @@ fn id_load_word(word: u32, pc: u32) -> Instruction {
     }
 
     if op1 == 0b01 {
+        // p243 T3
         return Instruction::LdrImm {
             rn,
             rt,
             offset,
-            add: true,
             index: true,
             wback: false,
         };
@@ -972,24 +977,24 @@ fn id_load_word(word: u32, pc: u32) -> Instruction {
 
     if op2 == 0 {
         let rm = (word & 0b1111) as u8;
-        let shift = ((word >> 4) & 0b11) as u8;
-        return Instruction::LdrReg { rn, rt, rm, shift, shift_type: ShiftType::LSL };
+        let shift_n = ((word >> 4) & 0b11) as u32;
+        return Instruction::LdrReg { rn, rt, rm, shift_t: ShiftType::LSL, shift_n };
     }
 
     let op3 = op2 >> 2;
-    let offset8 = (word & 0b1111_1111) as u16;
+    let mut offset8 = (word & 0b1111_1111) as i32;
 
     if op3 == 0b1100 || (op3 & 0b1001) == 0b1001 {
-        let index = (word & (1 << 10)) > 0;
-        let add = (word & (1 << 9)) > 0;
-        let wback = (word & (1 << 8)) > 0;
+        // p243 T4
+        if !bitset(word, 9) {
+            offset8 = -offset8;
+        }
         return Instruction::LdrImm {
             rn,
             rt,
             offset: offset8,
-            index,
-            add,
-            wback,
+            index: bitset(word, 10),
+            wback: bitset(word, 8),
         };
     }
 
