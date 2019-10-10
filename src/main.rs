@@ -22,25 +22,20 @@ use std::string::String;
 use std::time::SystemTime;
 use std::vec::Vec;
 
-#[derive(Debug)]
-struct Flags { // TODO: APSR, EPSR, etc.
-    n: bool, // negative
-    z: bool, // zero
-    c: bool, // carry
-    v: bool, // overflow
-    q: bool, // saturation
-    thumb: bool, // thumb mode (should always be true for discoboard)
-}
+// NOTE: Make peripherals implement a Read and Write trait to make
+// this action generic
 
-impl fmt::Display for Flags {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let neg = if self.n { 'N' } else { '_' };
-        let zero = if self.z { 'Z' } else { '_' };
-        let carry = if self.c { 'C' } else { '_' };
-        let over = if self.v { 'V' } else { '_' };
-        let sat = if self.q { 'Q' } else { '_' };
-        return write!(f, "xPSR: {}{}{}{}{}", neg, zero, carry, over, sat);
-    }
+enum Exception {
+    Reset,
+    NonMaskableInterrupt,
+    HardFault,
+    MemManage,
+    BusFault,
+    UsageFault,
+    DebugMonitor,
+    SupervisorCall,
+    PendSV,
+    SysTick,
 }
 
 #[derive(Debug)]
@@ -49,23 +44,67 @@ enum AccessType {
 }
 
 #[derive(Debug)]
+struct APSR {
+    // B1.4.2
+    n: bool, // negative
+    z: bool, // zero
+    c: bool, // carry
+    v: bool, // overflow
+    q: bool, // saturation
+    ge: u8,
+}
+
+impl fmt::Display for APSR {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let neg = if self.n { 'N' } else { '_' };
+        let zero = if self.z { 'Z' } else { '_' };
+        let carry = if self.c { 'C' } else { '_' };
+        let over = if self.v { 'V' } else { '_' };
+        let sat = if self.q { 'Q' } else { '_' };
+        return write!(f, "APSR: {}{}{}{}{}", neg, zero, carry, over, sat);
+    }
+}
+
+#[derive(Debug)]
+struct IPSR {
+    // B1.4.2
+    exception: u32,
+}
+
+#[derive(Debug)]
+struct EPSR {
+    // B1.4.2
+    it_ici: u32,
+    t: bool, // thumb mode
+}
+
+#[derive(Debug)]
 struct CPU {
     registers: [u32; 16],
-    flags: Flags,
+    apsr: APSR,
+    ipsr: IPSR,
+    epsr: EPSR,
 }
 
 impl CPU {
     fn new() -> CPU {
         return CPU {
             registers: [0; 16],
-            flags: Flags {
+            apsr: APSR {
                 n: false,
                 z: true,
                 c: true,
                 v: false,
                 q: false,
-                thumb: true,
+                ge: 0,
             },
+            ipsr: IPSR {
+                exception: 0,
+            },
+            epsr: EPSR {
+                it_ici: 0,
+                t: true,
+            }
         };
     }
 
@@ -81,42 +120,22 @@ impl CPU {
         self.registers[reg as usize] = val;
     }
 
-    fn get_flag_state(&self) -> u32 {
-        let mut state = 0;
-        if self.flags.n {
-            state += 1 << 0
-        };
-        if self.flags.z {
-            state += 1 << 1
-        };
-        if self.flags.c {
-            state += 1 << 2
-        };
-        if self.flags.v {
-            state += 1 << 3
-        };
-        if self.flags.q {
-            state += 1 << 4
-        };
-        return state;
-    }
-
     fn check_condition(&self, cond: Condition) -> bool {
         return match cond {
-            Condition::Equal => self.flags.z,
-            Condition::NotEqual => !self.flags.z,
-            Condition::CarrySet => self.flags.c,
-            Condition::CarryClear => !self.flags.c,
-            Condition::Negative => self.flags.n,
-            Condition::PosOrZero => self.flags.n,
-            Condition::Overflow => self.flags.v,
-            Condition::NotOverflow => !self.flags.v,
-            Condition::UHigher => self.flags.c && !self.flags.z,
-            Condition::ULowerSame => !self.flags.c || self.flags.z,
-            Condition::SHigherSame => self.flags.n == self.flags.v,
-            Condition::Slower => self.flags.n != self.flags.v,
-            Condition::SHigher => !self.flags.z && (self.flags.n == self.flags.v),
-            Condition::SLowerSame => self.flags.z || (self.flags.n != self.flags.v),
+            Condition::Equal => self.apsr.z,
+            Condition::NotEqual => !self.apsr.z,
+            Condition::CarrySet => self.apsr.c,
+            Condition::CarryClear => !self.apsr.c,
+            Condition::Negative => self.apsr.n,
+            Condition::PosOrZero => self.apsr.n,
+            Condition::Overflow => self.apsr.v,
+            Condition::NotOverflow => !self.apsr.v,
+            Condition::UHigher => self.apsr.c && !self.apsr.z,
+            Condition::ULowerSame => !self.apsr.c || self.apsr.z,
+            Condition::SHigherSame => self.apsr.n == self.apsr.v,
+            Condition::Slower => self.apsr.n != self.apsr.v,
+            Condition::SHigher => !self.apsr.z && (self.apsr.n == self.apsr.v),
+            Condition::SLowerSame => self.apsr.z || (self.apsr.n != self.apsr.v),
             Condition::Always => true,
         };
     }
@@ -154,7 +173,7 @@ impl fmt::Display for CPU {
             ));
         }
         registers.push('\n');
-        registers.push_str(&format!("{}{}\n", indent, self.flags));
+        registers.push_str(&format!("{}{}\n", indent, self.apsr));
         return write!(f, "CPU {{\n{}}}", registers);
     }
 }
@@ -163,6 +182,7 @@ impl fmt::Display for CPU {
 pub enum Location {
     Flash(usize),
     Ram(usize),
+    Peripheral(usize),
 }
 
 struct MemoryBus {
@@ -301,6 +321,7 @@ impl MemoryBus {
         return match location {
             Location::Flash(i) => read_value(&self.flash, i, size),
             Location::Ram(i) => read_value(&self.data, i, size),
+            Location::Peripheral(i) => self.read_preipheral(i, size),
         };
     }
 
@@ -321,7 +342,69 @@ impl MemoryBus {
             return match location {
                 Location::Flash(i) => read_value(&self.flash, i, size),
                 Location::Ram(i) => read_value(&self.data, i, size),
+                Location::Peripheral(i) => self.read_preipheral(i, size),
             };
+        }
+    }
+
+    fn read_peripheral(&self, address: usize, size: usize) -> Result<u32, String> {
+        return match address {
+            0x4000_0000..=0x4000_97FF => self.read_peripheral_apb1(&self, address, size),
+            0x4001_0000..=0x4001_63FF => self.read_peripheral_apb2(&self, address, size),
+            0x4002_0000..=0x4002_43FF => self.read_peripheral_ahb1(&self, address, size),
+            0x4002_4400..=0x5006_0BFF => self.read_peripheral_ahb2(&self, address, size),
+            _ => 0, // reserved regions just return 0
+        }
+    }
+
+    fn read_peripheral_apb1(&self, address: usize, size: usize) -> Result<u32, String> {
+        if address < 0x4000_0000 || address > 0x4000_97FF {
+            panic!("Unexpected address {:#010X} for APB1 bus", address);
+        }
+        return match address {
+            0x4000_0000..=0x4000_03FF => self.peripherals.tim2.read(address - 0x4000_0000, size),
+            0x4000_0400..=0x4000_07FF => self.peripherals.tim3.read(address - 0x4000_0400, size),
+            0x4000_0800..=0x4000_0BFF => self.peripherals.tim4.read(address - 0x4000_0800, size),
+            0x4000_0C00..=0x4000_0FFF => self.peripherals.tim5.read(address - 0x4000_0C00, size),
+            0x4000_1000..=0x4000_13FF => self.peripherals.tim6.read(address - 0x4000_1000, size),
+            0x4000_1400..=0x4000_17FF => self.peripherals.tim7.read(address - 0x4000_1400, size),
+            0x4000_2400..=0x4000_27FF => self.peripherals.lcd.read(address - 0x4000_2400, size),
+            0x4000_2800..=0x4000_2BFF => self.peripherals.rtc.read(address - 0x4000_2800, size),
+            0x4000_2C00..=0x4000_2FFF => self.peripherals.wwdg.read(address - 0x4000_2C00, size),
+            0x4000_3000..=0x4000_33FF => self.peripherals.iwdg.read(address - 0x4000_3000, size),
+            0x4000_3800..=0x4000_3BFF => self.peripherals.spi2.read(address - 0x4000_3800, size),
+            0x4000_3C00..=0x4000_3FFF => self.peripherals.spi3.read(address - 0x4000_3C00, size),
+            0x4000_4400..=0x4000_47FF => self.peripherals.usart2.read(address - 0x4000_4400, size),
+            0x4000_4800..=0x4000_4BFF => self.peripherals.usart3.read(address - 0x4000_4800, size),
+            0x4000_4C00..=0x4000_4FFF => self.peripherals.uart4.read(address - 0x4000_4C00, size),
+            0x4000_5000..=0x4000_53FF => self.peripherals.uart5.read(address - 0x4000_5000, size),
+            0x4000_5400..=0x4000_57FF => self.peripherals.i2c1.read(address - 0x4000_5400, size),
+            0x4000_5800..=0x4000_5BFF => self.peripherals.i2c2.read(address - 0x4000_5800, size),
+            0x4000_5C00..=0x4000_5FFF => self.peripherals.i2c3.read(address - 0x4000_5C00, size),
+            0x4000_6400..=0x4000_67FF => self.peripherals.can1.read(address - 0x4000_6400, size),
+            0x4000_7000..=0x4000_73FF => self.peripherals.pwr.read(address - 0x4000_7000, size),
+            0x4000_7400..=0x4000_77FF => self.peripherals.dac.read(address - 0x4000_7400, size),
+            0x4000_7800..=0x4000_7BFF => self.peripherals.opamp.read(address - 0x4000_7800, size),
+            0x4000_7C00..=0x4000_7FFF => self.peripherals.lptim1.read(address - 0x4000_7C00, size),
+            0x4000_8000..=0x4000_83FF => self.peripherals.lpuart1.read(address - 0x4000_8000, size),
+            0x4000_8800..=0x4000_8BFF => self.peripherals.swpmi1.read(address - 0x4000_8800, size),
+            0x4000_9400..=0x4000_97FF => self.peripherals.lptim2.read(address - 0x4000_9400, size),
+            _ => Ok(0),
+        }
+    }
+
+    fn read_peripheral_apb2(&self, address: usize, size: usize) -> Result<u32, String> {
+        return match address {
+            0x4001_0000..=0x4001_002F => self.peripherals.syscfg.read(address - 0x4001_0000),
+            0x4001_0030..=0x4001_01FF => self.peripherals.vrefbuf.read(address - 0x4001_0030),
+            0x4001_0200..=0x4001_03FF => self.peripherals.comp.read(address - 0x4001_0200),
+            0x4001_0400..=0x4001_07FF => self.peripherals.exti.read(address - 0x4001_0400),
+            0x4001_1C00..=0x4001_1FFF => self.peripherals.firewall.read(address - 0x4001_1C00),
+            0x4001_2800..=0x4001_2BFF => self.peripherals.sdmmc1.read(address - 0x4001_2800),
+            0x4001_2C00..=0x4001_2FFF => self.peripherals.tim1.read(address - 0x4001_2C00),
+            0x4001_3000..=0x4001_33FF => self.peripherals.spi1.read(address - 0x4001_3000),
+
+            _ => Ok(0),
         }
     }
 
@@ -331,6 +414,7 @@ impl MemoryBus {
             0x0000_0000..=0x000F_FFFF => Location::Flash(address),
             0x0800_0000..=0x080F_FFFF => Location::Flash(address - 0x0800_0000),
             0x2000_0000..=0x2001_FFFF => Location::Ram(address - 0x2000_0000),
+            0x4000_0000..=0x5FFF_FFFF => Location::Peripheral(address),
             _ => {
                 return Err(format!("Out of bounds memory access at {:#010X}", address));
             }
@@ -384,7 +468,7 @@ impl Board {
         return Board {
             cpu: CPU::new(),
             memory: MemoryBus::new(),
-            current_mode: ExecMode::ModeHandler,
+            current_mode: ExecMode::ModeThread,
             register_formats: [RegFormat::Hex; 16],
             branch_map: HashMap::new(),
         };
@@ -589,8 +673,8 @@ impl Board {
 
     fn blx_write_pc(&mut self, address: u32) {
         // A2.3.1 p31
-        self.cpu.flags.thumb = bitset(address, 0);
-        if !self.cpu.flags.thumb {
+        self.cpu.epsr.t = bitset(address, 0);
+        if !self.cpu.epsr.t {
             panic!("self.raise_exception(Exception::UsageFault('Invalid State'))"); // TODO: Centralise exceptions
         }
         self.branch_to(address & !0b1);
@@ -625,26 +709,26 @@ impl Board {
 
     fn adc_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
         // A7.7.1
-        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), imm32, self.cpu.flags.c as u32);
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), imm32, self.cpu.apsr.c as u32);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
-            self.cpu.flags.v = overflow;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
+            self.cpu.apsr.v = overflow;
         }
     }
 
     fn adc_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
         // A7.7.2
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
-        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), shifted, self.cpu.flags.c as u32);
+        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), shifted, self.cpu.apsr.c as u32);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
-            self.cpu.flags.v = overflow;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
+            self.cpu.apsr.v = overflow;
         }
     }
 
@@ -653,26 +737,26 @@ impl Board {
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), imm32, 0);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
-            self.cpu.flags.v = overflow;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
+            self.cpu.apsr.v = overflow;
         }
     }
 
     fn add_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
         // A7.7.4
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), shifted, 0);
         if rd == 15 {
             self.alu_write_pc(result);
         } else {
             self.write_reg(rd, result);
             if setflags {
-                self.cpu.flags.n = bitset(result, 31);
-                self.cpu.flags.z = result == 0;
-                self.cpu.flags.c = carry;
-                self.cpu.flags.v = overflow;
+                self.cpu.apsr.n = bitset(result, 31);
+                self.cpu.apsr.z = result == 0;
+                self.cpu.apsr.c = carry;
+                self.cpu.apsr.v = overflow;
             }
         }
     }
@@ -682,26 +766,26 @@ impl Board {
         let (result, carry, overflow) = add_with_carry(self.read_sp(), imm32, 0);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
-            self.cpu.flags.v = overflow;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
+            self.cpu.apsr.v = overflow;
         }
     }
 
     fn add_sp_reg(&mut self, rd: u8, rm: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
         // A7.7.6
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
         let (result, carry, overflow) = add_with_carry(self.read_sp(), shifted, 0);
         if rd == 15 {
             self.alu_write_pc(result);
         } else {
             self.write_reg(rd, result);
             if setflags {
-                self.cpu.flags.n = bitset(result, 31);
-                self.cpu.flags.z = result == 0;
-                self.cpu.flags.c = carry;
-                self.cpu.flags.v = overflow;
+                self.cpu.apsr.n = bitset(result, 31);
+                self.cpu.apsr.z = result == 0;
+                self.cpu.apsr.c = carry;
+                self.cpu.apsr.v = overflow;
             }
         }
     }
@@ -718,10 +802,10 @@ impl Board {
         self.write_reg(rd, result);
 
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = match carry {
-                CarryChange::Same => self.cpu.flags.c,
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = match carry {
+                CarryChange::Same => self.cpu.apsr.c,
                 CarryChange::Set => true,
                 CarryChange::Clear => false,
             };
@@ -731,25 +815,25 @@ impl Board {
 
     fn and_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
         // A7.7.9
-        let (shifted, carry) = shift_c(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let (shifted, carry) = shift_c(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
         let result = self.read_reg(rn) & shifted;
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
             // v unchanged
         }
     }
 
     fn asr_imm(&mut self, rd: u8, rm: u8, shift_n: u32, setflags: bool) {
         // A7.7.10
-        let (result, carry) = shift_c(self.read_reg(rm), ShiftType::ASR, shift_n, self.cpu.flags.c as u32);
+        let (result, carry) = shift_c(self.read_reg(rm), ShiftType::ASR, shift_n, self.cpu.apsr.c as u32);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
             // v unchanged
         }
     }
@@ -757,12 +841,12 @@ impl Board {
     fn asr_reg(&mut self, rd: u8, rm: u8, rn: u8, setflags: bool) {
         // A7.7.11
         let shift_n = self.read_reg(rm) & 0xFF;
-        let (result, carry) = shift_c(self.read_reg(rn), ShiftType::ASR, shift_n, self.cpu.flags.c as u32);
+        let (result, carry) = shift_c(self.read_reg(rn), ShiftType::ASR, shift_n, self.cpu.apsr.c as u32);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
             // v unchanged
         }
     }
@@ -803,10 +887,10 @@ impl Board {
         let result = self.read_reg(rn) & !imm32;
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(imm32, 31);
-            self.cpu.flags.z = imm32 == 0;
-            self.cpu.flags.c = match carry {
-                CarryChange::Same => self.cpu.flags.c,
+            self.cpu.apsr.n = bitset(imm32, 31);
+            self.cpu.apsr.z = imm32 == 0;
+            self.cpu.apsr.c = match carry {
+                CarryChange::Same => self.cpu.apsr.c,
                 CarryChange::Set => true,
                 CarryChange::Clear => false,
             };
@@ -816,13 +900,13 @@ impl Board {
 
     fn bic_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
         // A7.7.16
-        let (shifted, carry) = shift_c(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let (shifted, carry) = shift_c(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
         let result = self.read_reg(rn) & !shifted;
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
             // v unchanged
         }
     }
@@ -889,39 +973,39 @@ impl Board {
     fn cmn_imm(&mut self, rn: u8, imm32: u32) {
         // A7.7.25
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), imm32, 0);
-        self.cpu.flags.n = bitset(result, 31);
-        self.cpu.flags.z = result == 0;
-        self.cpu.flags.c = carry;
-        self.cpu.flags.v = overflow;
+        self.cpu.apsr.n = bitset(result, 31);
+        self.cpu.apsr.z = result == 0;
+        self.cpu.apsr.c = carry;
+        self.cpu.apsr.v = overflow;
     }
 
     fn cmn_reg(&mut self, rn: u8, rm: u8, shift_t: ShiftType, shift_n: u32) {
         // A7.7.26
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), shifted, 0);
-        self.cpu.flags.n = bitset(result, 31);
-        self.cpu.flags.z = result == 0;
-        self.cpu.flags.c = carry;
-        self.cpu.flags.v = overflow;
+        self.cpu.apsr.n = bitset(result, 31);
+        self.cpu.apsr.z = result == 0;
+        self.cpu.apsr.c = carry;
+        self.cpu.apsr.v = overflow;
     }
 
     fn cmp_imm(&mut self, rn: u8, imm32: u32) {
         // A7.7.27
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !imm32, 1);
-        self.cpu.flags.n = bitset(result, 31);
-        self.cpu.flags.z = result == 0;
-        self.cpu.flags.c = carry;
-        self.cpu.flags.v = overflow;
+        self.cpu.apsr.n = bitset(result, 31);
+        self.cpu.apsr.z = result == 0;
+        self.cpu.apsr.c = carry;
+        self.cpu.apsr.v = overflow;
     }
 
     fn cmp_reg(&mut self, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32) {
         // A7.7.28
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !shifted, 1);
-        self.cpu.flags.n = bitset(result, 31);
-        self.cpu.flags.z = result == 0;
-        self.cpu.flags.c = carry;
-        self.cpu.flags.v = overflow;
+        self.cpu.apsr.n = bitset(result, 31);
+        self.cpu.apsr.z = result == 0;
+        self.cpu.apsr.c = carry;
+        self.cpu.apsr.v = overflow;
     }
 
     fn cps(&mut self, _enable: bool, _affect_pri: bool, _affect_fault: bool) {
@@ -957,10 +1041,10 @@ impl Board {
         let result = self.read_reg(rn) ^ imm32;
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = match carry {
-                CarryChange::Same => self.cpu.flags.c,
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = match carry {
+                CarryChange::Same => self.cpu.apsr.c,
                 CarryChange::Set => true,
                 CarryChange::Clear => false,
             };
@@ -970,13 +1054,13 @@ impl Board {
 
     fn eor_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
         // A7.7.36
-        let (shifted, carry) = shift_c(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let (shifted, carry) = shift_c(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
         let result = self.read_reg(rn) ^ shifted;
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
             // v unchanged
         }
     }
@@ -1079,7 +1163,7 @@ impl Board {
 
     fn ldr_reg(&mut self, rt: u8, rn: u8, rm: u8, shift_t: ShiftType, shift_n: u32) {
         // A7.7.45
-        let offset = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let offset = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
         let offset_address = self.read_reg(rn).wrapping_add(offset);
         let address = offset_address; // NOTE: This is supposed to be conditional on 'index', but 'index' is always true
         let data = self.memory.read_word(address).unwrap();
@@ -1111,7 +1195,7 @@ impl Board {
     fn ldrb_reg(&mut self, rt: u8, rm: u8, rn: u8, shift_n: u32) {
         // A7.7.48
         // NOTE: THis has index, add, and wback, but they are always true, true, false
-        let offset = shift(self.read_reg(rm), ShiftType::LSL, shift_n, self.cpu.flags.c as u32);
+        let offset = shift(self.read_reg(rm), ShiftType::LSL, shift_n, self.cpu.apsr.c as u32);
         let address = self.read_reg(rn).wrapping_add(offset);
         self.write_reg(rt, self.memory.read_byte(address).unwrap() as u32);
     }
@@ -1177,7 +1261,7 @@ impl Board {
 
     fn ldrh_reg(&mut self, rt: u8, rm: u8, rn: u8, shift_n: u32) {
         // A7.7.57
-        let offset = shift(self.read_reg(rm), ShiftType::LSL, shift_n, self.cpu.flags.c as u32);
+        let offset = shift(self.read_reg(rm), ShiftType::LSL, shift_n, self.cpu.apsr.c as u32);
         let address = self.read_reg(rn).wrapping_add(offset);
         let data = self.memory.read_mem_u(address, 2).unwrap();
         self.write_reg(rt, data);
@@ -1185,12 +1269,12 @@ impl Board {
 
     fn lsl_imm(&mut self, rd: u8, rm: u8, shift_n: u32, setflags: bool) {
         // A7.7.68
-        let (result, carry) = shift_c(self.read_reg(rm), ShiftType::LSL, shift_n, self.cpu.flags.c as u32);
+        let (result, carry) = shift_c(self.read_reg(rm), ShiftType::LSL, shift_n, self.cpu.apsr.c as u32);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
             // v unchanged
         }
     }
@@ -1199,10 +1283,10 @@ impl Board {
         // A7.7.76
         self.write_reg(rd, imm32);
         if setflags {
-            self.cpu.flags.n = bitset(imm32, 31);
-            self.cpu.flags.z = imm32 == 0;
-            self.cpu.flags.c = match carry {
-                CarryChange::Same => self.cpu.flags.c,
+            self.cpu.apsr.n = bitset(imm32, 31);
+            self.cpu.apsr.z = imm32 == 0;
+            self.cpu.apsr.c = match carry {
+                CarryChange::Same => self.cpu.apsr.c,
                 CarryChange::Set => true,
                 CarryChange::Clear => false,
             };
@@ -1218,8 +1302,8 @@ impl Board {
         } else {
             self.write_reg(rd, result);
             if setflags {
-                self.cpu.flags.n = bitset(result, 31);
-                self.cpu.flags.z = result == 0;
+                self.cpu.apsr.n = bitset(result, 31);
+                self.cpu.apsr.z = result == 0;
                 // c unchanged
                 // v unchanged
             }
@@ -1251,7 +1335,7 @@ impl Board {
 
     fn str_reg(&mut self, rt: u8, rn: u8, rm: u8, shift_t: ShiftType, shift_n: u32) {
         // A7.7.159
-        let offset = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let offset = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
         let address = self.read_reg(rn).wrapping_add(offset);
         self.memory.write_word(address, self.read_reg(rt)).unwrap();
         self.memory.print_raw_mem_dump(0x2000_0000, 100);
@@ -1262,23 +1346,23 @@ impl Board {
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !imm32, 1);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
-            self.cpu.flags.v = overflow;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
+            self.cpu.apsr.v = overflow;
         }
     }
 
     fn sub_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
         // A7.7.172
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.flags.c as u32);
+        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !shifted, 1);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.flags.n = bitset(result, 31);
-            self.cpu.flags.z = result == 0;
-            self.cpu.flags.c = carry;
-            self.cpu.flags.v = overflow;
+            self.cpu.apsr.n = bitset(result, 31);
+            self.cpu.apsr.z = result == 0;
+            self.cpu.apsr.c = carry;
+            self.cpu.apsr.v = overflow;
         }
     }
 }
@@ -1314,7 +1398,7 @@ impl fmt::Display for Board {
             ));
         }
         registers.push('\n');
-        registers.push_str(&format!("{}{}\n", indent, self.cpu.flags));
+        registers.push_str(&format!("{}{}\n", indent, self.cpu.apsr));
         return write!(f, "CPU {{\n{}}}", registers);
     }
 }
