@@ -7,8 +7,10 @@ extern crate goblin;
 extern crate regex;
 
 mod instruction;
-
 use instruction::{bitset, bitset16, add_with_carry, shift, shift_c, align, CarryChange, Condition, Instruction, RegFormat, ShiftType};
+
+mod peripherals;
+use peripherals::Peripherals;
 
 use goblin::elf::Elf;
 use regex::Regex;
@@ -22,9 +24,7 @@ use std::string::String;
 use std::time::SystemTime;
 use std::vec::Vec;
 
-// NOTE: Make peripherals implement a Read and Write trait to make
-// this action generic
-
+#[derive(Debug)]
 enum Exception {
     Reset,
     NonMaskableInterrupt,
@@ -182,12 +182,13 @@ impl fmt::Display for CPU {
 pub enum Location {
     Flash(usize),
     Ram(usize),
-    Peripheral(usize),
+    Peripheral(u32), // we keep the passed address, and resolve in more detail
 }
 
 struct MemoryBus {
     flash: [u8; 1024 * 1024],
     data: [u8; 128 * 1024],
+    peripherals: Peripherals
 }
 
 impl fmt::Debug for MemoryBus {
@@ -233,6 +234,7 @@ impl MemoryBus {
         return MemoryBus {
             flash: [0xFF; 1024 * 1024],
             data: [0xFF; 128 * 1024],
+            peripherals: Peripherals::new(),
         };
     }
 
@@ -306,10 +308,10 @@ impl MemoryBus {
 
     fn read_mem_a(&self, address: u32, size: usize) -> Result<u32, String> {
         // B2.3.4 p583
-        return self.read_mem_a_with_priv(address, size, AccessType::Normal);
+        return self.read_mem_a_with_priv(address, size, &AccessType::Normal);
     }
 
-    fn read_mem_a_with_priv(&self, address: u32, size: usize, _access_type: AccessType) -> Result<u32, String> {
+    fn read_mem_a_with_priv(&self, address: u32, size: usize, _access_type: &AccessType) -> Result<u32, String> {
         // B2.3.4 p583
         if address != align(address, size as u32) {
             // Set UFSR.UNALIGNED = true;
@@ -321,90 +323,28 @@ impl MemoryBus {
         return match location {
             Location::Flash(i) => read_value(&self.flash, i, size),
             Location::Ram(i) => read_value(&self.data, i, size),
-            Location::Peripheral(i) => self.read_preipheral(i, size),
+            Location::Peripheral(i) => self.peripherals.read(i, size),
         };
     }
 
     fn read_mem_u(&self, address: u32, size: usize) -> Result<u32, String> {
         // B2.3.5 p584
-        return self.read_mem_u_with_priv(address, size, AccessType::Normal);
+        return self.read_mem_u_with_priv(address, size, &AccessType::Normal);
     }
 
-    fn read_mem_u_with_priv(&self, address: u32, size: usize, access_type: AccessType) -> Result<u32, String> {
+    fn read_mem_u_with_priv(&self, address: u32, size: usize, access_type: &AccessType) -> Result<u32, String> {
         // B2.3.5 p585
         if address == align(address, size as u32) {
             return self.read_mem_a_with_priv(address, size, access_type);
-        } else if /* CCr.UNALIGN_TRP */ false {
+        } else if /* CCR.UNALIGN_TRP */ false {
             // USFR.UNALIGNED = true;
             panic!("UsageFault");
         } else {
-            let location = self.address_to_physical(address)?;
-            return match location {
-                Location::Flash(i) => read_value(&self.flash, i, size),
-                Location::Ram(i) => read_value(&self.data, i, size),
-                Location::Peripheral(i) => self.read_preipheral(i, size),
-            };
-        }
-    }
-
-    fn read_peripheral(&self, address: usize, size: usize) -> Result<u32, String> {
-        return match address {
-            0x4000_0000..=0x4000_97FF => self.read_peripheral_apb1(&self, address, size),
-            0x4001_0000..=0x4001_63FF => self.read_peripheral_apb2(&self, address, size),
-            0x4002_0000..=0x4002_43FF => self.read_peripheral_ahb1(&self, address, size),
-            0x4002_4400..=0x5006_0BFF => self.read_peripheral_ahb2(&self, address, size),
-            _ => 0, // reserved regions just return 0
-        }
-    }
-
-    fn read_peripheral_apb1(&self, address: usize, size: usize) -> Result<u32, String> {
-        if address < 0x4000_0000 || address > 0x4000_97FF {
-            panic!("Unexpected address {:#010X} for APB1 bus", address);
-        }
-        return match address {
-            0x4000_0000..=0x4000_03FF => self.peripherals.tim2.read(address - 0x4000_0000, size),
-            0x4000_0400..=0x4000_07FF => self.peripherals.tim3.read(address - 0x4000_0400, size),
-            0x4000_0800..=0x4000_0BFF => self.peripherals.tim4.read(address - 0x4000_0800, size),
-            0x4000_0C00..=0x4000_0FFF => self.peripherals.tim5.read(address - 0x4000_0C00, size),
-            0x4000_1000..=0x4000_13FF => self.peripherals.tim6.read(address - 0x4000_1000, size),
-            0x4000_1400..=0x4000_17FF => self.peripherals.tim7.read(address - 0x4000_1400, size),
-            0x4000_2400..=0x4000_27FF => self.peripherals.lcd.read(address - 0x4000_2400, size),
-            0x4000_2800..=0x4000_2BFF => self.peripherals.rtc.read(address - 0x4000_2800, size),
-            0x4000_2C00..=0x4000_2FFF => self.peripherals.wwdg.read(address - 0x4000_2C00, size),
-            0x4000_3000..=0x4000_33FF => self.peripherals.iwdg.read(address - 0x4000_3000, size),
-            0x4000_3800..=0x4000_3BFF => self.peripherals.spi2.read(address - 0x4000_3800, size),
-            0x4000_3C00..=0x4000_3FFF => self.peripherals.spi3.read(address - 0x4000_3C00, size),
-            0x4000_4400..=0x4000_47FF => self.peripherals.usart2.read(address - 0x4000_4400, size),
-            0x4000_4800..=0x4000_4BFF => self.peripherals.usart3.read(address - 0x4000_4800, size),
-            0x4000_4C00..=0x4000_4FFF => self.peripherals.uart4.read(address - 0x4000_4C00, size),
-            0x4000_5000..=0x4000_53FF => self.peripherals.uart5.read(address - 0x4000_5000, size),
-            0x4000_5400..=0x4000_57FF => self.peripherals.i2c1.read(address - 0x4000_5400, size),
-            0x4000_5800..=0x4000_5BFF => self.peripherals.i2c2.read(address - 0x4000_5800, size),
-            0x4000_5C00..=0x4000_5FFF => self.peripherals.i2c3.read(address - 0x4000_5C00, size),
-            0x4000_6400..=0x4000_67FF => self.peripherals.can1.read(address - 0x4000_6400, size),
-            0x4000_7000..=0x4000_73FF => self.peripherals.pwr.read(address - 0x4000_7000, size),
-            0x4000_7400..=0x4000_77FF => self.peripherals.dac.read(address - 0x4000_7400, size),
-            0x4000_7800..=0x4000_7BFF => self.peripherals.opamp.read(address - 0x4000_7800, size),
-            0x4000_7C00..=0x4000_7FFF => self.peripherals.lptim1.read(address - 0x4000_7C00, size),
-            0x4000_8000..=0x4000_83FF => self.peripherals.lpuart1.read(address - 0x4000_8000, size),
-            0x4000_8800..=0x4000_8BFF => self.peripherals.swpmi1.read(address - 0x4000_8800, size),
-            0x4000_9400..=0x4000_97FF => self.peripherals.lptim2.read(address - 0x4000_9400, size),
-            _ => Ok(0),
-        }
-    }
-
-    fn read_peripheral_apb2(&self, address: usize, size: usize) -> Result<u32, String> {
-        return match address {
-            0x4001_0000..=0x4001_002F => self.peripherals.syscfg.read(address - 0x4001_0000),
-            0x4001_0030..=0x4001_01FF => self.peripherals.vrefbuf.read(address - 0x4001_0030),
-            0x4001_0200..=0x4001_03FF => self.peripherals.comp.read(address - 0x4001_0200),
-            0x4001_0400..=0x4001_07FF => self.peripherals.exti.read(address - 0x4001_0400),
-            0x4001_1C00..=0x4001_1FFF => self.peripherals.firewall.read(address - 0x4001_1C00),
-            0x4001_2800..=0x4001_2BFF => self.peripherals.sdmmc1.read(address - 0x4001_2800),
-            0x4001_2C00..=0x4001_2FFF => self.peripherals.tim1.read(address - 0x4001_2C00),
-            0x4001_3000..=0x4001_33FF => self.peripherals.spi1.read(address - 0x4001_3000),
-
-            _ => Ok(0),
+            let mut result: u32 = 0;
+            for i in 0..(size as u32) {
+                result += self.read_mem_a_with_priv(address + i, 1, &access_type)? << (8 * i);
+            }
+            return Ok(result);
         }
     }
 
@@ -414,7 +354,7 @@ impl MemoryBus {
             0x0000_0000..=0x000F_FFFF => Location::Flash(address),
             0x0800_0000..=0x080F_FFFF => Location::Flash(address - 0x0800_0000),
             0x2000_0000..=0x2001_FFFF => Location::Ram(address - 0x2000_0000),
-            0x4000_0000..=0x5FFF_FFFF => Location::Peripheral(address),
+            0x4000_0000..=0x5FFF_FFFF => Location::Peripheral(address as u32),
             _ => {
                 return Err(format!("Out of bounds memory access at {:#010X}", address));
             }
@@ -443,6 +383,7 @@ impl MemoryBus {
         return match location {
             Location::Flash(_) => Err(String::from("Cannot write to Flash memory")),
             Location::Ram(i) => write_value(val, &mut self.data, i, 4),
+            Location::Peripheral(_) => Err(format!("Cannot write to peripherals ({:#010X}) yet", address)),
         }
     }
 }
@@ -1421,7 +1362,7 @@ fn main() {
     println!("\n{}\n", board);
     println!("finished init");
 
-    let mut cont = false;
+    let mut cont = true;
     loop {
         if !cont {
             print!("press enter to continue");
@@ -1430,7 +1371,7 @@ fn main() {
             io::stdin().read_line(&mut input).unwrap();
             print!("\n\n");
         } else {
-            cont = board.read_pc() != 0x0800_2d22;
+            cont = board.read_pc() != 0x0800_01C8;
         }
 
         match board.next_instruction(true) {

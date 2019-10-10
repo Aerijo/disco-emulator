@@ -257,12 +257,13 @@ pub fn bitset16(word: u16, bit: u16) -> bool {
     return (word & (1 << bit)) > 0;
 }
 
-pub fn align(address: u32, bits: u32) -> u32 {
-    return address & (!0 << bits);
+pub fn align(address: u32, size: u32) -> u32 {
+    assert!(size == 1 || size == 2 || size == 4);
+    return address & !(size - 1);
 }
 
 fn word_align(address: u32) -> u32 {
-    return align(address, 2);
+    return align(address, 4);
 }
 
 fn sign_extend(value: u32, from: u32) -> i32 {
