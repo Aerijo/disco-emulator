@@ -12,6 +12,8 @@ use instruction::{bitset, bitset16, add_with_carry, shift, shift_c, align, Carry
 mod peripherals;
 use peripherals::Peripherals;
 
+mod utils;
+
 use goblin::elf::Elf;
 use regex::Regex;
 use std::collections::HashMap;

@@ -1,4 +1,5 @@
 use crate::peripherals::Peripheral;
+use crate::utils::io::read_register;
 
 #[derive(Debug)]
 pub struct RCC {
@@ -78,15 +79,25 @@ impl Default for RCC {
 }
 
 impl Peripheral for RCC {
-    fn read(&self, _offset: u32, _size: usize) -> Result<u32, String> {
-        // return match offset {
-        //     0x00..=0x03 => self.read_cr(size),
-        //     0x04..=0x07 => self.read_fcr(size),
-        //     _ => Err(format!("unimplemented LCD register")),
-        // }
+    fn read(&self, offset: u32, size: usize) -> Result<u32, String> {
+        return match offset {
+            0x00..=0x03 => read_register(self.cr, offset, size),
+            0x04..=0x07 => read_register(self.icscr, offset - 0x04, size),
+            0x08..=0x0B => read_register(self.cfgr, offset - 0x08, size),
+            0x0C..=0x0F => read_register(self.pllcfgr, offset - 0x0C, size),
+            0x10..=0x13 => read_register(self.pllsai1cfgr, offset - 0x10, size),
+            0x14..=0x17 => read_register(self.pllsai2cfgr, offset - 0x14, size),
+            0x18..=0x1B => read_register(self.cier, offset - 0x18, size),
+            0x1C..=0x1F => read_register(self.cifr, offset - 0x1C, size),
+            0x20..=0x23 => read_register(self.ahb1rstr, offset - 0x20, size),
+            0x24..=0x27 => read_register(self.ahb2rstr, offset - 0x24, size),
+            0x28..=0x2B => read_register(self.ahb3rstr, offset - 0x28, size),
+            0x58..=0x5B => read_register(self.apb1enr1, offset - 0x58, size),
+            _ => Err(format!("unimplemented RCC register")),
+        }
 
-        println!("Returning {:#010X}", self.icscr);
-        return Ok(self.icscr);
+        // println!("Returning {:#010X}", self.icscr);
+        // return Ok(self.icscr);
     }
 
     fn write(&mut self, address: u32, _size: usize) -> Result<(), String> {

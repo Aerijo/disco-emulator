@@ -1,9 +1,13 @@
 use crate::peripherals::Peripheral;
+use crate::utils::io::read_register;
 
 #[derive(Debug)]
 pub struct LCD {
     cr: u32,
     fcr: u32,
+    sr: u32,
+    clr: u32,
+    ram: [u32; 8],
 }
 
 impl LCD {
@@ -11,6 +15,9 @@ impl LCD {
         return LCD {
             cr: 0x0000_0000,
             fcr: 0x0000_0000,
+            sr: 0x0000_0020,
+            clr: 0x0000_0000,
+            ram: [0x0000_0000; 8],
         }
     }
 }
@@ -22,14 +29,15 @@ impl Default for LCD {
 }
 
 impl Peripheral for LCD {
-    fn read(&self, _offset: u32, _size: usize) -> Result<u32, String> {
-        // return match offset {
-        //     0x00..=0x03 => self.read_cr(size),
-        //     0x04..=0x07 => self.read_fcr(size),
-        //     _ => Err(format!("unimplemented LCD register")),
-        // }
-
-        return Ok(self.cr);
+    fn read(&self, offset: u32, size: usize) -> Result<u32, String> {
+        return match offset {
+            0x00..=0x03 => read_register(self.cr, offset, size),
+            0x04..=0x07 => read_register(self.fcr, offset - 0x04, size),
+            0x08..=0x0B => read_register(self.cr, offset - 0x08, size),
+            0x0C..=0x0F => read_register(self.clr, offset - 0x0C, size),
+            0x14..=0x53 => read_register(self.ram[((offset - 0x14) / 32) as usize], offset, size),
+            _ => Err(format!("unimplemented LCD register")),
+        }
     }
 
     fn write(&mut self, address: u32, _size: usize) -> Result<(), String> {
