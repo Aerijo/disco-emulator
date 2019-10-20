@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+use crate::Shift;
+
 #[derive(Copy, Clone, Debug)]
 pub enum RegFormat {
     Bin, // binary
@@ -71,172 +73,49 @@ pub enum ShiftType {
 
 #[derive(Debug)]
 pub enum Instruction {
-    MovReg {
-        to: u8,
-        from: u8,
-        setflags: bool,
-    },
-    AddImm {
-        dest: u8,
-        first: u8,
-        val: u32,
-        setflags: bool,
-    },
-    SubImm {
-        dest: u8,
-        first: u8,
-        val: u32,
-        setflags: bool,
-    },
-    SubReg {
-        rd: u8,
-        rm: u8,
-        rn: u8,
-        shift_t: ShiftType,
-        shift_n: u32,
-        setflags: bool,
-    },
-    StrReg {
-        // This is defined with add, index, and wback, but apparently
-        // only ever uses true, true, and false for their values.
-        rn: u8,
-        rt: u8,
-        rm: u8,
-        shift_t: ShiftType,
-        shift_n: u32,
-    },
-
-    AndImm {
-        rd: u8,
-        rn: u8,
-        val: u32,
-        setflags: bool,
-        carry: CarryChange,
-    },
-
-    Branch {
-        address: u32,
-    },
-    LinkedBranch {
-        address: u32,
-    },
-    BranchExchange {
-        rm: u8,
-    },
-    CondBranch {
-        address: u32,
-        cond: Condition,
-    },
-    AddReg {
-        rd: u8,
-        rm: u8,
-        rn: u8,
-        shift_t: ShiftType,
-        shift_n: u32,
-        setflags: bool,
-    },
-    MovImm {
-        rd: u8,
-        val: u32,
-        setflags: bool,
-        carry: CarryChange,
-    },
-    Stm {
-        rn: u8,
-        registers: u16,
-        wback: bool,
-    },
-    Stmdb {
-        rn: u8,
-        registers: u16,
-        wback: bool,
-    },
-    Ldm {
-        rn: u8,
-        registers: u16,
-        wback: bool,
-    },
-    Ldmdb {
-        rn: u8,
-        registers: u16,
-        wback: bool,
-    },
-    Pop {
-        registers: u16,
-    },
-    Push {
-        registers: u16,
-    },
-    CmpReg {
-        rm: u8,
-        rn: u8,
-        shift_t: ShiftType,
-        shift_n: u32,
-    },
-    AddSpImm {
-        rd: u8,
-        val: u32,
-        setflags: bool,
-    },
-
-    LdrLit {
-        rt: u8,
-        address: u32,
-    },
-    LdrImm {
-        rn: u8,
-        rt: u8,
-        offset: i32,
-        index: bool,
-        wback: bool,
-    },
-    StrImm {
-        rn: u8,
-        rt: u8,
-        offset: i32,
-        index: bool,
-        wback: bool,
-    },
+    AddImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
+    AddReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
+    AddSpImm {rd: u8, val: u32, setflags: bool},
+    AndImm {rd: u8, rn: u8, val: u32, setflags: bool, carry: CarryChange},
+    AsrImm {rd: u8, rm: u8, shift: Shift, setflags: bool},
+    Branch {address: u32},
+    CondBranch {address: u32, cond: Condition},
+    LinkedBranch {address: u32},
+    BranchExchange {rm: u8},
+    CmpReg {rm: u8, rn: u8, shift: Shift},
+    LslImm {rd: u8, rm: u8, shift: Shift},
+    LsrImm {rd: u8, rm: u8, shift: Shift},
+    Ldm {rn: u8, registers: u16, wback: bool},
+    Ldmdb {rn: u8, registers: u16, wback: bool},
+    LdrImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
+    LdrLit {rt: u8, address: u32},
     LdrReg {
         // This is defined with add, index, and wback, but apparently
         // only ever uses true, true, and false for their values.
-        rn: u8,
-        rt: u8,
-        rm: u8,
-        shift_t: ShiftType,
-        shift_n: u32,
+        rn: u8, rt: u8, rm: u8, shift: Shift,
     },
-    Ldrt {
-        rn: u8,
-        rt: u8,
-        offset: i32,
+    Ldrt {rn: u8, rt: u8, offset: i32},
+    MovImm {rd: u8, val: u32, setflags: bool, carry: CarryChange},
+    MovReg {rd: u8, rm: u8, setflags: bool},
+    Pop {registers: u16},
+    Push {registers: u16},
+    Stm {rn: u8, registers: u16, wback: bool},
+    Stmdb {rn: u8, registers: u16, wback: bool},
+    StrImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
+    StrReg {
+        // This is defined with add, index, and wback, but apparently
+        // only ever uses true, true, and false for their values.
+        rn: u8, rt: u8, rm: u8, shift: Shift,
     },
-
-    TstReg {
-        rn: u8,
-        rm: u8,
-        shift_type: ShiftType,
-        shift: u16,
-    },
+    SubImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
+    SubReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
+    TstReg {rn: u8, rm: u8, shift: Shift},
 
     Undefined,
     Unpredictable,
 
     Unimplemented,
-    Undo {
-        num: usize,
-    },
-    Redo {
-        num: usize,
-    },
-    Format {
-        reg: usize,
-        kind: RegFormat,
-    },
-    Memview {
-        index: usize,
-        length: usize,
-    },
+    Format {reg: usize, kind: RegFormat},
 }
 
 impl Instruction {
@@ -249,11 +128,13 @@ impl Instruction {
     }
 }
 
-pub fn bitset(word: u32, bit: u32) -> bool {
-    return (word & (1 << bit)) > 0;
-}
+// pub fn bs<T: Into<u32>>(word: T, bit: T) -> bool {
+//
+// }
 
-pub fn bitset16(word: u16, bit: u16) -> bool {
+pub fn bitset<T: Into<u32> >(word: T, bit: T) -> bool {
+    let word = word.into();
+    let bit = bit.into();
     return (word & (1 << bit)) > 0;
 }
 
@@ -309,7 +190,7 @@ fn rotate_right_32_c(input: u32, shift: u32) -> (u32, CarryChange) {
     // p27
     assert!(shift != 0);
     let m = shift % 32;
-    let result = (input >> m) | (input << (32 - m));
+    let result = (input >> m) | (input << (32 - m)); // TODO: Use u32.rotate_right
     let carry_out = if bitset(result, 31) {
         CarryChange::Set
     } else {
@@ -368,25 +249,25 @@ fn asr_c(input: u32, shift: u32) -> (u32, bool) {
     return (result, carry_out);
 }
 
-pub fn shift_c(input: u32, shift_type: ShiftType, amount: u32, carry_in: u32) -> (u32, bool) {
+pub fn shift_c(input: u32, s: Shift, carry_in: u32) -> (u32, bool) {
     // p181
-    assert!(!(shift_type == ShiftType::RRX && amount != 1));
-    if amount == 0 {
+    assert!(!(s.shift_t == ShiftType::RRX && s.shift_n != 1));
+    if s.shift_n == 0 {
         return (input, carry_in == 1);
     }
 
-    return match shift_type {
-        ShiftType::LSL => lsl_c(input, amount),
-        ShiftType::LSR => lsr_c(input, amount),
-        ShiftType::ASR => asr_c(input, amount),
-        ShiftType::ROR => ror_c(input, amount),
-        ShiftType::RRX => rrx_c(input, amount),
+    return match s.shift_t {
+        ShiftType::LSL => lsl_c(input, s.shift_n),
+        ShiftType::LSR => lsr_c(input, s.shift_n),
+        ShiftType::ASR => asr_c(input, s.shift_n),
+        ShiftType::ROR => ror_c(input, s.shift_n),
+        ShiftType::RRX => rrx_c(input, carry_in),
     }
 }
 
-pub fn shift(input: u32, shift_type: ShiftType, amount: u32, carry_in: u32) -> u32 {
+pub fn shift(input: u32, s: Shift, carry_in: u32) -> u32 {
     // p181
-    return shift_c(input, shift_type, amount, carry_in).0;
+    return shift_c(input, s, carry_in).0;
 }
 
 pub fn add_with_carry(x: u32, y: u32, carry_in: u32) -> (u32, bool, bool) {
@@ -397,10 +278,23 @@ pub fn add_with_carry(x: u32, y: u32, carry_in: u32) -> (u32, bool, bool) {
 
     let x_neg = bitset(x, 31);
     let y_neg = bitset(y, 31);
-    let result_neg = bitset(result as u32   , 31);
+    let result_neg = bitset(result as u32, 31);
     let overflow = (x_neg == y_neg) && (x_neg != result_neg);
 
     return (result as u32, carry_out, overflow);
+}
+
+fn decode_imm_shift(encoded: u16) -> Shift {
+    // A7.4.2
+    let shift_n = (encoded & 0x1F) as u32;
+    return match encoded >> 5 {
+        0b00 => Shift {shift_t: ShiftType::LSL, shift_n},
+        0b01 => Shift {shift_t: ShiftType::LSR, shift_n},
+        0b10 => Shift {shift_t: ShiftType::ASR, shift_n},
+        0b11 if shift_n == 0 => Shift {shift_t: ShiftType::RRX, shift_n: 1},
+        0b11 if shift_n != 0 => Shift {shift_t: ShiftType::ROR, shift_n},
+        _ => panic!(),
+    }
 }
 
 // NOTE: pc value is 4 bytes ahead of instruction start. All(?) instructions that use the PC
@@ -411,9 +305,9 @@ fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
     return match op1 {
         0b00 => id_shift_add_sub_move_cmp(hword),
         0b01 => {
-            if bitset16(hword, 13) || bitset16(hword, 12) {
+            if bitset(hword, 13) || bitset(hword, 12) {
                 id_ldr_str_single(hword)
-            } else if bitset16(hword, 11) {
+            } else if bitset(hword, 11) {
                 let rt = ((hword >> 8) & 0b111) as u8;
 
                 // PC for offset value is based on page 124 of ARM manual.
@@ -423,7 +317,7 @@ fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
                 // The PC value for LDR is then word aligned
                 let address = word_align(pc) + ((hword as u32 & 0xFF) << 2);
                 Instruction::LdrLit { rt, address }
-            } else if bitset16(hword, 10) {
+            } else if bitset(hword, 10) {
                 id_special_data_branch(hword)
             } else {
                 id_data_processing(hword)
@@ -445,11 +339,11 @@ fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
             Instruction::Undefined
         }
         0b11 => {
-            if bitset16(hword, 13) {
+            if bitset(hword, 13) {
                 let offset = sign_extend(((hword & 0x7FF) << 1) as u32, 11);
                 let address = ((pc as i32) + offset) as u32;
                 Instruction::Branch { address }
-            } else if bitset16(hword, 12) {
+            } else if bitset(hword, 12) {
                 id_conditional_branch_supc(hword, pc)
             } else {
                 Instruction::Undefined
@@ -463,7 +357,7 @@ fn id_ldr_str_single(hword: u16) -> Instruction {
     let op_a = hword >> 12;
     assert!(op_a == 0b0101 || op_a == 0b0110 || op_a == 0b0111 || op_a == 0b1000 || op_a == 0b1001);
     let op_b = (hword >> 9) & 0b111;
-    let op_c = bitset16(hword, 11);
+    let op_c = bitset(hword, 11);
 
     let rm = ((hword >> 6) & 0b111) as u8;
     let rn = ((hword >> 3) & 0b111) as u8;
@@ -473,11 +367,11 @@ fn id_ldr_str_single(hword: u16) -> Instruction {
         0b0101 => match op_b {
             0b000 => {
                 // p388
-                Instruction::StrReg { rt, rm, rn, shift_t: ShiftType::LSL, shift_n: 0 }
+                Instruction::StrReg { rt, rm, rn, shift: Shift {shift_t: ShiftType::LSL, shift_n: 0}}
             }
             0b100 => {
                 // p257 T1
-                Instruction::LdrReg { rt, rm, rn, shift_t: ShiftType::LSL, shift_n: 0 }
+                Instruction::LdrReg { rt, rm, rn, shift: Shift {shift_t: ShiftType::LSL, shift_n: 0}}
             }
             _ => Instruction::Unimplemented,
         },
@@ -497,7 +391,7 @@ fn id_misc(hword: u16) -> Instruction {
     return match op1 {
         0b010 => {
             let mut registers = hword & 0xFF;
-            if bitset16(hword, 8) {
+            if bitset(hword, 8) {
                 registers += 1 << 14;
             }
             Instruction::Push { registers }
@@ -522,17 +416,38 @@ fn id_conditional_branch_supc(hword: u16, pc: u32) -> Instruction {
 }
 
 fn id_shift_add_sub_move_cmp(hword: u16) -> Instruction {
-    // p130
+    // A5.2.1
     assert!((hword & (0b11 << 14)) == 0b00 << 14);
+
     let op1 = hword >> 12;
     let rd = ((hword >> 8) & 0b111) as u8;
     let val = (hword & 0xFF) as u32;
+
     return match op1 {
+        0b00 => {
+            let rd = (hword & 0b111) as u8;
+            let rm = ((hword >> 3) & 0b111) as u8;
+            let shift_n = ((hword >> 6) & 0x1F) as u32;
+            if bitset(hword, 11) {
+                // A7.7.70 T1
+                Instruction::LsrImm {rd, rm, shift: Shift {shift_t: ShiftType::LSR, shift_n}}
+            } else if (hword >> 6) == 0 {
+                // A7.7.77 T2
+                Instruction::MovReg {rd, rm, setflags: true}
+            } else {
+                // A7.7.68 T1
+                Instruction::LslImm {rd, rm, shift: Shift {shift_t: ShiftType::LSL, shift_n}}
+            }
+        }
         0b01 => {
-            if (hword & (1 << 11)) > 0 {
+            if bitset(hword, 11) {
                 id_add_sub(hword)
             } else {
-                Instruction::Unimplemented
+                let rd = (hword & 0b111) as u8;
+                let rm = ((hword >> 3) & 0b111) as u8;
+                let shift_n = ((hword >> 6) & 0x1F) as u32;
+                // A7.7.10 T1
+                Instruction::AsrImm {rd, rm, shift: Shift {shift_t: ShiftType::ASR, shift_n}, setflags: true}
             }
         }
         0b10 => {
@@ -544,14 +459,16 @@ fn id_shift_add_sub_move_cmp(hword: u16) -> Instruction {
                     val,
                     setflags: true,
                     carry: CarryChange::Same,
-                } // TODO: No setflags in IT block
+                }
             }
         }
         0b11 => {
-            if !bitset16(hword, 11) {
-                Instruction::AddImm { dest: rd, first: rd, val, setflags: true }
+            if !bitset(hword, 11) {
+                // A7.7.3 T2
+                Instruction::AddImm {rd, rn: rd, imm32: val, setflags: true}
             } else {
-                Instruction::SubImm { dest: rd, first: rd, val, setflags: true }
+                // A7.7.175 T2
+                Instruction::SubImm {rd, rn: rd, imm32: val, setflags: true}
             }
         }
         _ => Instruction::Unimplemented,
@@ -559,21 +476,24 @@ fn id_shift_add_sub_move_cmp(hword: u16) -> Instruction {
 }
 
 fn id_add_sub(hword: u16) -> Instruction {
+    // A5.2.1
+    assert!(hword & (0b1111 << 12) == (0b0001 << 12));
+
     let rm = ((hword >> 6) & 0b111) as u8;
     let rn = ((hword >> 3) & 0b111) as u8;
     let rd = (hword & 0b111) as u8;
+    let shift = Shift {shift_t: ShiftType::LSL, shift_n: 0};
     return match (hword >> 9) & 0b11 {
         0b00 => Instruction::AddReg {
             // p190 T1
             rd,
             rm,
             rn,
-            shift_t: ShiftType::LSL,
-            shift_n: 0,
+            shift,
             setflags: true,
         },
-        0b01 => Instruction::Unimplemented,
-        0b10 => Instruction::Unimplemented,
+        0b01 => Instruction::SubReg {rd, rn, rm, shift, setflags: true}, // A7.7.175 T1
+        0b10 => Instruction::AddImm {rd, rn, setflags: true, imm32: ((hword >> 6) & 0b111) as u32},
         0b11 => Instruction::Unimplemented,
         _ => panic!(),
     };
@@ -587,7 +507,7 @@ fn id_data_processing(hword: u16) -> Instruction {
             // p222 T1
             let rn = (hword & 0b111) as u8;
             let rm = ((hword >> 3) & 0b111) as u8;
-            Instruction::CmpReg { rm, rn, shift_t: ShiftType::LSL, shift_n: 0 }
+            Instruction::CmpReg { rm, rn, shift: Shift {shift_t: ShiftType::LSL, shift_n: 0}}
         }
         _ => Instruction::Unimplemented,
     };
@@ -604,21 +524,20 @@ fn id_special_data_branch(hword: u16) -> Instruction {
             rd: rn,
             rm,
             rn,
-            shift_t: ShiftType::LSL,
-            shift_n: 0,
+            shift: Shift {shift_t: ShiftType::LSL, shift_n: 0},
             setflags: false,
         },
         0b010 => {
-            if bitset16(hword, 6) {
+            if bitset(hword, 6) {
                 Instruction::Unpredictable
             } else {
                 // p222 T2
-                Instruction::CmpReg { rm, rn, shift_t: ShiftType::LSL, shift_n: 0 }
+                Instruction::CmpReg { rm, rn, shift: Shift {shift_t: ShiftType::LSL, shift_n: 0}}
             }
         }
         0b100 | 0b101 => Instruction::MovReg {
-            to: rn,
-            from: rm,
+            rd: rn,
+            rm,
             setflags: false,
         },
         0b110 => Instruction::BranchExchange { rm },
@@ -733,7 +652,7 @@ fn id_data_processing_shifted(word: u32) -> Instruction {
     // p148
     assert!((word >> 25) == 0b111_0101);
     let op = (word >> 21) & 0b1111;
-    let s = ((word >> 20) & 0b1) > 0;
+    let s = bitset(word, 20);
     let rn_is_pc = ((word >> 16) & 0b1111) == 0b1111;
     let rd = ((word >> 8) & 0b1111) as u8;
     let rd_is_pc = rd == 0b1111;
@@ -760,8 +679,8 @@ fn id_data_processing_shifted(word: u32) -> Instruction {
                         if imm5 == 0 {
                             let rm = (word & 0b1111) as u8;
                             Instruction::MovReg {
-                                to: rd,
-                                from: rm,
+                                rd,
+                                rm,
                                 setflags: s,
                             }
                         } else {
@@ -849,9 +768,9 @@ fn id_data_proc_modified_immediate(word: u32) -> Instruction {
             let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
             let imm32 = thumb_expand_imm(imm12);
             Instruction::AddImm {
-                dest: rd,
-                first: rn,
-                val: imm32,
+                rd,
+                rn,
+                imm32,
                 setflags: bitset(word, 20),
             }
         }
@@ -983,7 +902,7 @@ fn id_load_word(word: u32, pc: u32) -> Instruction {
     if op2 == 0 {
         let rm = (word & 0b1111) as u8;
         let shift_n = ((word >> 4) & 0b11) as u32;
-        return Instruction::LdrReg { rn, rt, rm, shift_t: ShiftType::LSL, shift_n };
+        return Instruction::LdrReg { rn, rt, rm, shift: Shift {shift_t: ShiftType::LSL, shift_n}};
     }
 
     let op3 = op2 >> 2;

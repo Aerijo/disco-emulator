@@ -7,10 +7,13 @@ extern crate goblin;
 extern crate regex;
 
 mod instruction;
-use instruction::{bitset, bitset16, add_with_carry, shift, shift_c, align, CarryChange, Condition, Instruction, RegFormat, ShiftType};
+use instruction::{bitset, add_with_carry, shift, shift_c, align, CarryChange, Condition, Instruction, RegFormat, ShiftType};
 
 mod peripherals;
 use peripherals::Peripherals;
+
+mod cpu;
+use cpu::{CPU};
 
 mod utils;
 
@@ -46,138 +49,9 @@ enum AccessType {
 }
 
 #[derive(Debug)]
-struct APSR {
-    // B1.4.2
-    n: bool, // negative
-    z: bool, // zero
-    c: bool, // carry
-    v: bool, // overflow
-    q: bool, // saturation
-    ge: u8,
-}
-
-impl fmt::Display for APSR {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let neg = if self.n { 'N' } else { '_' };
-        let zero = if self.z { 'Z' } else { '_' };
-        let carry = if self.c { 'C' } else { '_' };
-        let over = if self.v { 'V' } else { '_' };
-        let sat = if self.q { 'Q' } else { '_' };
-        return write!(f, "APSR: {}{}{}{}{}", neg, zero, carry, over, sat);
-    }
-}
-
-#[derive(Debug)]
-struct IPSR {
-    // B1.4.2
-    exception: u32,
-}
-
-#[derive(Debug)]
-struct EPSR {
-    // B1.4.2
-    it_ici: u32,
-    t: bool, // thumb mode
-}
-
-#[derive(Debug)]
-struct CPU {
-    registers: [u32; 16],
-    apsr: APSR,
-    ipsr: IPSR,
-    epsr: EPSR,
-}
-
-impl CPU {
-    fn new() -> CPU {
-        return CPU {
-            registers: [0; 16],
-            apsr: APSR {
-                n: false,
-                z: true,
-                c: true,
-                v: false,
-                q: false,
-                ge: 0,
-            },
-            ipsr: IPSR {
-                exception: 0,
-            },
-            epsr: EPSR {
-                it_ici: 0,
-                t: true,
-            }
-        };
-    }
-
-    fn read_reg(&self, reg: u8) -> u32 {
-        // This is a "true" assertion, as registers come
-        // from the machine code, so should never be out of range.
-        assert!(reg <= 15);
-        return self.registers[reg as usize];
-    }
-
-    fn write_reg(&mut self, reg: u8, val: u32) {
-        assert!(reg <= 15);
-        self.registers[reg as usize] = val;
-    }
-
-    fn check_condition(&self, cond: Condition) -> bool {
-        return match cond {
-            Condition::Equal => self.apsr.z,
-            Condition::NotEqual => !self.apsr.z,
-            Condition::CarrySet => self.apsr.c,
-            Condition::CarryClear => !self.apsr.c,
-            Condition::Negative => self.apsr.n,
-            Condition::PosOrZero => self.apsr.n,
-            Condition::Overflow => self.apsr.v,
-            Condition::NotOverflow => !self.apsr.v,
-            Condition::UHigher => self.apsr.c && !self.apsr.z,
-            Condition::ULowerSame => !self.apsr.c || self.apsr.z,
-            Condition::SHigherSame => self.apsr.n == self.apsr.v,
-            Condition::Slower => self.apsr.n != self.apsr.v,
-            Condition::SHigher => !self.apsr.z && (self.apsr.n == self.apsr.v),
-            Condition::SLowerSame => self.apsr.z || (self.apsr.n != self.apsr.v),
-            Condition::Always => true,
-        };
-    }
-}
-
-impl fmt::Display for CPU {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut registers = String::new();
-        let indent = "    ";
-
-        for i in 0..4 {
-            let left = self.read_reg(i);
-            let right = self.read_reg(i + 8);
-            let left_label = format!("r{}", i);
-            let right_label = format!("r{}", i + 8);
-            registers.push_str(&format!(
-                "{}{: >3}: {: <34}  {: >3}: {: <34}\n",
-                indent, left_label, left, right_label, right
-            ));
-        }
-        registers.push('\n');
-        for i in 4..8 {
-            let left = self.read_reg(i);
-            let right = self.read_reg(i + 8);
-            let special = ["r12", "sp", "lr", "pc"];
-            let left_label = format!("r{}", i);
-
-            registers.push_str(&format!(
-                "{}{: >3}: {: <34}  {: >3}: {: <34}\n",
-                indent,
-                left_label,
-                left,
-                special[(i - 4) as usize],
-                right
-            ));
-        }
-        registers.push('\n');
-        registers.push_str(&format!("{}{}\n", indent, self.apsr));
-        return write!(f, "CPU {{\n{}}}", registers);
-    }
+pub struct Shift {
+    shift_t: ShiftType,
+    shift_n: u32,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -452,20 +326,20 @@ impl Board {
                 setflags,
                 carry,
             } => self.mov_imm(rd, val, setflags, carry),
-            Instruction::MovReg { to, from, setflags } => {
-                self.mov_reg(to, from, setflags)
+            Instruction::MovReg { rd, rm, setflags } => {
+                self.mov_reg(rd, rm, setflags)
             }
             Instruction::AddImm {
-                dest,
-                first,
-                val,
+                rd,
+                rn,
+                imm32,
                 setflags,
-            } => self.add_imm(dest, first, val, setflags),
-            Instruction::AddReg { rd, rm, rn, shift_t, shift_n, setflags } => {
-                self.add_reg(rd, rm, rn, shift_t, shift_n, setflags)
+            } => self.add_imm(rd, rn, imm32, setflags),
+            Instruction::AddReg { rd, rm, rn, shift, setflags } => {
+                self.add_reg(rd, rm, rn, shift, setflags)
             }
-            Instruction::SubReg { rd, rm, rn, shift_t, shift_n, setflags } => {
-                self.sub_reg(rd, rm, rn, shift_t, shift_n, setflags)
+            Instruction::SubReg { rd, rm, rn, shift, setflags } => {
+                self.sub_reg(rd, rm, rn, shift, setflags)
             }
             Instruction::AndImm {
                 rd,
@@ -478,12 +352,12 @@ impl Board {
             Instruction::BranchExchange { rm } => self.branch_exchange(rm),
             Instruction::LinkedBranch { address } => self.branch_with_link(address),
             Instruction::CondBranch { address, cond } => self.branch_cond(address, cond),
-            Instruction::CmpReg { rm, rn, shift_t, shift_n } => self.cmp_reg(rm, rn, shift_t, shift_n),
+            Instruction::CmpReg { rm, rn, shift } => self.cmp_reg(rm, rn, shift),
             Instruction::StrImm { rn, rt, offset, index, wback, } => self.str_imm(rt, rn, offset, index, wback),
             Instruction::Push { registers } => self.push(registers),
             Instruction::AddSpImm { rd, val, setflags } => self.add_sp_imm(rd, val, setflags),
-            Instruction::LdrReg { rt, rn, rm, shift_t, shift_n } => self.ldr_reg(rt, rn, rm, shift_t, shift_n),
-            Instruction::StrReg { rt, rn, rm, shift_t, shift_n } => self.str_reg(rt, rn, rm, shift_t, shift_n),
+            Instruction::LdrReg { rt, rn, rm, shift } => self.ldr_reg(rt, rn, rm, shift),
+            Instruction::StrReg { rt, rn, rm, shift } => self.str_reg(rt, rn, rm, shift),
             Instruction::Undefined => {}
             Instruction::Unpredictable => {
                 println!("Spooky");
@@ -595,6 +469,54 @@ impl Board {
         self.set_pc(self.read_pc() - if wide { 4 } else { 2 });
     }
 
+    fn get_shifted_register(&self, reg: u8, s: Shift) -> u32 {
+        return shift(self.read_reg(reg), s, self.cpu.read_carry_flag() as u32);
+    }
+
+    fn get_shift_with_carry(&self, reg: u8, s: Shift) -> (u32, bool) {
+        return shift_c(self.read_reg(reg), s, self.cpu.read_carry_flag() as u32);
+    }
+
+    fn get_add_with_carry(&self, reg: u8, imm32: u32) -> (u32, bool, bool) {
+        return add_with_carry(self.read_reg(reg), imm32, self.cpu.read_carry_flag() as u32);
+    }
+
+    fn get_add_with_no_carry(&self, reg: u8, imm32: u32) -> (u32, bool, bool) {
+        return add_with_carry(self.read_reg(reg), imm32, 0);
+    }
+
+    fn set_flags_nz(&mut self, result: u32) {
+        self.cpu.set_negative_flag(bitset(result, 31));
+        self.cpu.set_zero_flag(result == 0);
+        // c unchanged
+        // v unchanged
+    }
+
+    fn set_flags_nzc(&mut self, result: u32, carry: bool) {
+        self.set_flags_nz(result);
+        self.cpu.set_carry_flag(carry);
+        // v unchanged
+    }
+
+    fn set_flags_nzcv(&mut self, result: u32, carry: bool, overflow: bool) {
+        self.set_flags_nzc(result, carry);
+        self.cpu.set_overflow_flag(overflow);
+    }
+
+    fn set_flags_nz_alt_c(&mut self, result: u32, carry: CarryChange) {
+        self.set_flags_nz(result);
+        match carry {
+            CarryChange::Set => self.cpu.set_carry_flag(true),
+            CarryChange::Clear => self.cpu.set_carry_flag(false),
+            CarryChange::Same => {},
+        };
+        // v unchanged
+    }
+
+    /**
+     * Helper pseudocode functions
+     */
+
     fn branch_to(&mut self, address: u32) {
         // B1.4.7 p522
         self.set_pc(address);
@@ -616,8 +538,8 @@ impl Board {
 
     fn blx_write_pc(&mut self, address: u32) {
         // A2.3.1 p31
-        self.cpu.epsr.t = bitset(address, 0);
-        if !self.cpu.epsr.t {
+        self.cpu.set_thumb_mode(bitset(address, 0));
+        if !self.cpu.read_thumb_mode() {
             panic!("self.raise_exception(Exception::UsageFault('Invalid State'))"); // TODO: Centralise exceptions
         }
         self.branch_to(address & !0b1);
@@ -652,54 +574,42 @@ impl Board {
 
     fn adc_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
         // A7.7.1
-        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), imm32, self.cpu.apsr.c as u32);
+        let (result, carry, overflow) = self.get_add_with_carry(rn, imm32);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            self.cpu.apsr.v = overflow;
+            self.set_flags_nzcv(result, carry, overflow);
         }
     }
 
-    fn adc_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
+    fn adc_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
         // A7.7.2
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
-        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), shifted, self.cpu.apsr.c as u32);
+        let shifted = self.get_shifted_register(rm, shift);
+        let (result, carry, overflow) = self.get_add_with_carry(rn, shifted);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            self.cpu.apsr.v = overflow;
+            self.set_flags_nzcv(result, carry, overflow);
         }
     }
 
     fn add_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
         // A7.7.3
-        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), imm32, 0);
+        let (result, carry, overflow) = self.get_add_with_no_carry(rn, imm32);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            self.cpu.apsr.v = overflow;
+            self.set_flags_nzcv(result, carry, overflow);
         }
     }
 
-    fn add_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
+    fn add_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
         // A7.7.4
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
-        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), shifted, 0);
+        let shifted = self.get_shifted_register(rm, shift);
+        let (result, carry, overflow) = self.get_add_with_no_carry(rn, shifted);
         if rd == 15 {
             self.alu_write_pc(result);
         } else {
             self.write_reg(rd, result);
             if setflags {
-                self.cpu.apsr.n = bitset(result, 31);
-                self.cpu.apsr.z = result == 0;
-                self.cpu.apsr.c = carry;
-                self.cpu.apsr.v = overflow;
+                self.set_flags_nzcv(result, carry, overflow);
             }
         }
     }
@@ -709,26 +619,20 @@ impl Board {
         let (result, carry, overflow) = add_with_carry(self.read_sp(), imm32, 0);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            self.cpu.apsr.v = overflow;
+            self.set_flags_nzcv(result, carry, overflow);
         }
     }
 
-    fn add_sp_reg(&mut self, rd: u8, rm: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
+    fn add_sp_reg(&mut self, rd: u8, rm: u8, shift: Shift, setflags: bool) {
         // A7.7.6
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
+        let shifted = self.get_shifted_register(rm, shift);
         let (result, carry, overflow) = add_with_carry(self.read_sp(), shifted, 0);
         if rd == 15 {
             self.alu_write_pc(result);
         } else {
             self.write_reg(rd, result);
             if setflags {
-                self.cpu.apsr.n = bitset(result, 31);
-                self.cpu.apsr.z = result == 0;
-                self.cpu.apsr.c = carry;
-                self.cpu.apsr.v = overflow;
+                self.set_flags_nzcv(result, carry, overflow);
             }
         }
     }
@@ -745,52 +649,37 @@ impl Board {
         self.write_reg(rd, result);
 
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = match carry {
-                CarryChange::Same => self.cpu.apsr.c,
-                CarryChange::Set => true,
-                CarryChange::Clear => false,
-            };
-            // v unchanged
+            self.set_flags_nz_alt_c(result, carry);
         }
     }
 
-    fn and_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
+    fn and_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
         // A7.7.9
-        let (shifted, carry) = shift_c(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
+        let (shifted, carry) = self.get_shift_with_carry(rm, shift);
         let result = self.read_reg(rn) & shifted;
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            // v unchanged
+            self.set_flags_nzc(result, carry);
         }
     }
 
-    fn asr_imm(&mut self, rd: u8, rm: u8, shift_n: u32, setflags: bool) {
+    fn asr_imm(&mut self, rd: u8, rm: u8, shift: Shift, setflags: bool) {
         // A7.7.10
-        let (result, carry) = shift_c(self.read_reg(rm), ShiftType::ASR, shift_n, self.cpu.apsr.c as u32);
+        assert!(shift.shift_t == ShiftType::ASR);
+        let (result, carry) = self.get_shift_with_carry(rm, shift);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            // v unchanged
+            self.set_flags_nzc(result, carry);
         }
     }
 
     fn asr_reg(&mut self, rd: u8, rm: u8, rn: u8, setflags: bool) {
         // A7.7.11
         let shift_n = self.read_reg(rm) & 0xFF;
-        let (result, carry) = shift_c(self.read_reg(rn), ShiftType::ASR, shift_n, self.cpu.apsr.c as u32);
+        let (result, carry) =  self.get_shift_with_carry(rn, Shift {shift_t: ShiftType::ASR, shift_n});
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            // v unchanged
+            self.set_flags_nzc(result, carry);
         }
     }
 
@@ -830,27 +719,17 @@ impl Board {
         let result = self.read_reg(rn) & !imm32;
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(imm32, 31);
-            self.cpu.apsr.z = imm32 == 0;
-            self.cpu.apsr.c = match carry {
-                CarryChange::Same => self.cpu.apsr.c,
-                CarryChange::Set => true,
-                CarryChange::Clear => false,
-            };
-            // v unchanged
+            self.set_flags_nz_alt_c(result, carry);
         }
     }
 
-    fn bic_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
+    fn bic_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
         // A7.7.16
-        let (shifted, carry) = shift_c(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
+        let (shifted, carry) = self.get_shift_with_carry(rm, shift);
         let result = self.read_reg(rn) & !shifted;
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            // v unchanged
+            self.set_flags_nzc(result, carry);
         }
     }
 
@@ -915,40 +794,28 @@ impl Board {
 
     fn cmn_imm(&mut self, rn: u8, imm32: u32) {
         // A7.7.25
-        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), imm32, 0);
-        self.cpu.apsr.n = bitset(result, 31);
-        self.cpu.apsr.z = result == 0;
-        self.cpu.apsr.c = carry;
-        self.cpu.apsr.v = overflow;
+        let (result, carry, overflow) = self.get_add_with_no_carry(rn, imm32);
+        self.set_flags_nzcv(result, carry, overflow);
     }
 
-    fn cmn_reg(&mut self, rn: u8, rm: u8, shift_t: ShiftType, shift_n: u32) {
+    fn cmn_reg(&mut self, rn: u8, rm: u8, shift: Shift) {
         // A7.7.26
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
-        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), shifted, 0);
-        self.cpu.apsr.n = bitset(result, 31);
-        self.cpu.apsr.z = result == 0;
-        self.cpu.apsr.c = carry;
-        self.cpu.apsr.v = overflow;
+        let shifted = self.get_shifted_register(rm, shift);
+        let (result, carry, overflow) = self.get_add_with_no_carry(rn, shifted);
+        self.set_flags_nzcv(result, carry, overflow);
     }
 
     fn cmp_imm(&mut self, rn: u8, imm32: u32) {
         // A7.7.27
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !imm32, 1);
-        self.cpu.apsr.n = bitset(result, 31);
-        self.cpu.apsr.z = result == 0;
-        self.cpu.apsr.c = carry;
-        self.cpu.apsr.v = overflow;
+        self.set_flags_nzcv(result, carry, overflow);
     }
 
-    fn cmp_reg(&mut self, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32) {
+    fn cmp_reg(&mut self, rm: u8, rn: u8, shift: Shift) {
         // A7.7.28
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
+        let shifted = self.get_shifted_register(rm, shift);
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !shifted, 1);
-        self.cpu.apsr.n = bitset(result, 31);
-        self.cpu.apsr.z = result == 0;
-        self.cpu.apsr.c = carry;
-        self.cpu.apsr.v = overflow;
+        self.set_flags_nzcv(result, carry, overflow);
     }
 
     fn cps(&mut self, _enable: bool, _affect_pri: bool, _affect_fault: bool) {
@@ -984,27 +851,17 @@ impl Board {
         let result = self.read_reg(rn) ^ imm32;
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = match carry {
-                CarryChange::Same => self.cpu.apsr.c,
-                CarryChange::Set => true,
-                CarryChange::Clear => false,
-            };
-            // v unchanged
+            self.set_flags_nz_alt_c(result, carry);
         }
     }
 
-    fn eor_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
+    fn eor_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
         // A7.7.36
-        let (shifted, carry) = shift_c(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
+        let (shifted, carry) = self.get_shift_with_carry(rm, shift);
         let result = self.read_reg(rn) ^ shifted;
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            // v unchanged
+            self.set_flags_nzc(result, carry);
         }
     }
 
@@ -1104,9 +961,9 @@ impl Board {
         }
     }
 
-    fn ldr_reg(&mut self, rt: u8, rn: u8, rm: u8, shift_t: ShiftType, shift_n: u32) {
+    fn ldr_reg(&mut self, rt: u8, rn: u8, rm: u8, shift: Shift) {
         // A7.7.45
-        let offset = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
+        let offset = self.get_shifted_register(rm, shift);
         let offset_address = self.read_reg(rn).wrapping_add(offset);
         let address = offset_address; // NOTE: This is supposed to be conditional on 'index', but 'index' is always true
         let data = self.memory.read_word(address).unwrap();
@@ -1137,8 +994,8 @@ impl Board {
 
     fn ldrb_reg(&mut self, rt: u8, rm: u8, rn: u8, shift_n: u32) {
         // A7.7.48
-        // NOTE: THis has index, add, and wback, but they are always true, true, false
-        let offset = shift(self.read_reg(rm), ShiftType::LSL, shift_n, self.cpu.apsr.c as u32);
+        // NOTE: This has index, add, and wback, but they are always true, true, false
+        let offset = self.get_shifted_register(rm, Shift {shift_t: ShiftType::LSL, shift_n});
         let address = self.read_reg(rn).wrapping_add(offset);
         self.write_reg(rt, self.memory.read_byte(address).unwrap() as u32);
     }
@@ -1204,7 +1061,7 @@ impl Board {
 
     fn ldrh_reg(&mut self, rt: u8, rm: u8, rn: u8, shift_n: u32) {
         // A7.7.57
-        let offset = shift(self.read_reg(rm), ShiftType::LSL, shift_n, self.cpu.apsr.c as u32);
+        let offset = self.get_shifted_register(rm, Shift {shift_t: ShiftType::LSL, shift_n});
         let address = self.read_reg(rn).wrapping_add(offset);
         let data = self.memory.read_mem_u(address, 2).unwrap();
         self.write_reg(rt, data);
@@ -1212,13 +1069,20 @@ impl Board {
 
     fn lsl_imm(&mut self, rd: u8, rm: u8, shift_n: u32, setflags: bool) {
         // A7.7.68
-        let (result, carry) = shift_c(self.read_reg(rm), ShiftType::LSL, shift_n, self.cpu.apsr.c as u32);
+        let (result, carry) = self.get_shift_with_carry(rm, Shift {shift_t: ShiftType::LSL, shift_n});
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            // v unchanged
+            self.set_flags_nzc(result, carry);
+        }
+    }
+
+    fn lsl_reg(&mut self, rd: u8, rn: u8, rm: u8, setflags: bool) {
+        // A7.7.69
+        let shift_n = self.read_reg(rm) & 0xF;
+        let (result, carry) = self.get_shift_with_carry(rn, Shift {shift_t: ShiftType::LSL, shift_n});
+        self.write_reg(rd, result);
+        if setflags {
+            self.set_flags_nzc(result, carry);
         }
     }
 
@@ -1226,14 +1090,7 @@ impl Board {
         // A7.7.76
         self.write_reg(rd, imm32);
         if setflags {
-            self.cpu.apsr.n = bitset(imm32, 31);
-            self.cpu.apsr.z = imm32 == 0;
-            self.cpu.apsr.c = match carry {
-                CarryChange::Same => self.cpu.apsr.c,
-                CarryChange::Set => true,
-                CarryChange::Clear => false,
-            };
-            // v unchanged
+            self.set_flags_nz_alt_c(imm32, carry);
         }
     }
 
@@ -1245,10 +1102,7 @@ impl Board {
         } else {
             self.write_reg(rd, result);
             if setflags {
-                self.cpu.apsr.n = bitset(result, 31);
-                self.cpu.apsr.z = result == 0;
-                // c unchanged
-                // v unchanged
+                self.set_flags_nz(result);
             }
         }
     }
@@ -1257,7 +1111,7 @@ impl Board {
         // A7.7.99
         let mut sp = self.read_sp();
         for i in (0..=14u8).rev() {
-            if !bitset16(registers, i.into()) {
+            if !bitset(registers, i.into()) {
                 continue;
             }
             self.memory.write_word(sp, self.read_reg(i)).unwrap();
@@ -1276,9 +1130,9 @@ impl Board {
         if wback { self.write_reg(rn, offset_address); }
     }
 
-    fn str_reg(&mut self, rt: u8, rn: u8, rm: u8, shift_t: ShiftType, shift_n: u32) {
+    fn str_reg(&mut self, rt: u8, rn: u8, rm: u8, shift: Shift) {
         // A7.7.159
-        let offset = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
+        let offset = self.get_shifted_register(rm, shift);
         let address = self.read_reg(rn).wrapping_add(offset);
         self.memory.write_word(address, self.read_reg(rt)).unwrap();
         self.memory.print_raw_mem_dump(0x2000_0000, 100);
@@ -1289,23 +1143,17 @@ impl Board {
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !imm32, 1);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            self.cpu.apsr.v = overflow;
+            self.set_flags_nzcv(result, carry, overflow);
         }
     }
 
-    fn sub_reg(&mut self, rd: u8, rm: u8, rn: u8, shift_t: ShiftType, shift_n: u32, setflags: bool) {
+    fn sub_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
         // A7.7.172
-        let shifted = shift(self.read_reg(rm), shift_t, shift_n, self.cpu.apsr.c as u32);
+        let shifted = self.get_shifted_register(rm, shift);
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !shifted, 1);
         self.write_reg(rd, result);
         if setflags {
-            self.cpu.apsr.n = bitset(result, 31);
-            self.cpu.apsr.z = result == 0;
-            self.cpu.apsr.c = carry;
-            self.cpu.apsr.v = overflow;
+            self.set_flags_nzcv(result, carry, overflow);
         }
     }
 }
@@ -1341,7 +1189,7 @@ impl fmt::Display for Board {
             ));
         }
         registers.push('\n');
-        registers.push_str(&format!("{}{}\n", indent, self.cpu.apsr));
+        registers.push_str(&format!("{}{}\n", indent, self.cpu.get_apsr_display()));
         return write!(f, "CPU {{\n{}}}", registers);
     }
 }
