@@ -295,13 +295,11 @@ impl Board {
         let pc = self.read_pc();
         let val = self.memory.get_instr_word(pc)?;
 
-        println!("Reading: {:#010X}", val);
-
         // Most instructions that use the PC assume it is +4 bytes
         // from their position when calculating offsets (see page 124).
         let (instr, wide) = Instruction::from(val, pc + 4);
 
-        println!("Instruction is {}", if wide { "wide" } else { "short" });
+        println!("{:?}", instr);
 
         if update_pc {
             self.inc_pc(wide);
@@ -322,10 +320,10 @@ impl Board {
             } => self.ldr_imm(rt, rn, offset, index, wback),
             Instruction::MovImm {
                 rd,
-                val,
+                imm32,
                 setflags,
                 carry,
-            } => self.mov_imm(rd, val, setflags, carry),
+            } => self.mov_imm(rd, imm32, setflags, carry),
             Instruction::MovReg { rd, rm, setflags } => {
                 self.mov_reg(rd, rm, setflags)
             }
@@ -344,10 +342,10 @@ impl Board {
             Instruction::AndImm {
                 rd,
                 rn,
-                val,
+                imm32,
                 setflags,
                 carry,
-            } => self.and_imm(rd, rn, val, setflags, carry),
+            } => self.and_imm(rd, rn, imm32, setflags, carry),
             Instruction::Branch { address } => self.branch(address),
             Instruction::BranchExchange { rm } => self.branch_exchange(rm),
             Instruction::LinkedBranch { address } => self.branch_with_link(address),
@@ -355,7 +353,7 @@ impl Board {
             Instruction::CmpReg { rm, rn, shift } => self.cmp_reg(rm, rn, shift),
             Instruction::StrImm { rn, rt, offset, index, wback, } => self.str_imm(rt, rn, offset, index, wback),
             Instruction::Push { registers } => self.push(registers),
-            Instruction::AddSpImm { rd, val, setflags } => self.add_sp_imm(rd, val, setflags),
+            Instruction::AddSpImm { rd, imm32, setflags } => self.add_sp_imm(rd, imm32, setflags),
             Instruction::LdrReg { rt, rn, rm, shift } => self.ldr_reg(rt, rn, rm, shift),
             Instruction::StrReg { rt, rn, rm, shift } => self.str_reg(rt, rn, rm, shift),
             Instruction::Undefined => {}

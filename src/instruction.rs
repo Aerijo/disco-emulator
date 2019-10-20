@@ -75,38 +75,41 @@ pub enum ShiftType {
 pub enum Instruction {
     AddImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
     AddReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
-    AddSpImm {rd: u8, val: u32, setflags: bool},
-    AndImm {rd: u8, rn: u8, val: u32, setflags: bool, carry: CarryChange},
+    AddSpImm {rd: u8, imm32: u32, setflags: bool},
+    AndImm {rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange},
     AsrImm {rd: u8, rm: u8, shift: Shift, setflags: bool},
     Branch {address: u32},
     CondBranch {address: u32, cond: Condition},
     LinkedBranch {address: u32},
     BranchExchange {rm: u8},
+    CmpImm {rn: u8, imm32: u32},
     CmpReg {rm: u8, rn: u8, shift: Shift},
     LslImm {rd: u8, rm: u8, shift: Shift},
     LsrImm {rd: u8, rm: u8, shift: Shift},
     Ldm {rn: u8, registers: u16, wback: bool},
     Ldmdb {rn: u8, registers: u16, wback: bool},
     LdrImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
+    LdrbImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
+    LdrhImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
     LdrLit {rt: u8, address: u32},
-    LdrReg {
-        // This is defined with add, index, and wback, but apparently
-        // only ever uses true, true, and false for their values.
-        rn: u8, rt: u8, rm: u8, shift: Shift,
-    },
+    LdrReg {rn: u8, rt: u8, rm: u8, shift: Shift},
+    LdrbReg {rn: u8, rt: u8, rm: u8, shift: Shift},
+    LdrhReg {rn: u8, rt: u8, rm: u8, shift: Shift},
+    LdrsbReg {rn: u8, rt: u8, rm: u8, shift: Shift},
+    LdrshReg {rn: u8, rt: u8, rm: u8, shift: Shift},
     Ldrt {rn: u8, rt: u8, offset: i32},
-    MovImm {rd: u8, val: u32, setflags: bool, carry: CarryChange},
+    MovImm {rd: u8, imm32: u32, setflags: bool, carry: CarryChange},
     MovReg {rd: u8, rm: u8, setflags: bool},
     Pop {registers: u16},
     Push {registers: u16},
     Stm {rn: u8, registers: u16, wback: bool},
     Stmdb {rn: u8, registers: u16, wback: bool},
     StrImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
-    StrReg {
-        // This is defined with add, index, and wback, but apparently
-        // only ever uses true, true, and false for their values.
-        rn: u8, rt: u8, rm: u8, shift: Shift,
-    },
+    StrbImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
+    StrhImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
+    StrReg {rn: u8, rt: u8, rm: u8, shift: Shift},
+    StrbReg {rn: u8, rt: u8, rm: u8, shift: Shift},
+    StrhReg {rn: u8, rt: u8, rm: u8, shift: Shift},
     SubImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
     SubReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     TstReg {rn: u8, rm: u8, shift: Shift},
@@ -128,11 +131,7 @@ impl Instruction {
     }
 }
 
-// pub fn bs<T: Into<u32>>(word: T, bit: T) -> bool {
-//
-// }
-
-pub fn bitset<T: Into<u32> >(word: T, bit: T) -> bool {
+pub fn bitset<T: Into<u32>>(word: T, bit: T) -> bool {
     let word = word.into();
     let bit = bit.into();
     return (word & (1 << bit)) > 0;
@@ -300,21 +299,13 @@ fn decode_imm_shift(encoded: u16) -> Shift {
 // NOTE: pc value is 4 bytes ahead of instruction start. All(?) instructions that use the PC
 // assume this when calculating offsets (see page 124).
 fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
-    let op1 = hword >> 14;
-
-    return match op1 {
+    return match hword >> 14 {
         0b00 => id_shift_add_sub_move_cmp(hword),
         0b01 => {
             if bitset(hword, 13) || bitset(hword, 12) {
                 id_ldr_str_single(hword)
             } else if bitset(hword, 11) {
                 let rt = ((hword >> 8) & 0b111) as u8;
-
-                // PC for offset value is based on page 124 of ARM manual.
-                // When instruction is executed, the theoretical PC value is guaranteed
-                // to be 4 bytes ahead of the instruction address. Ours is still pointing to
-                // the current instruction, so we add 4 and then word align.
-                // The PC value for LDR is then word aligned
                 let address = word_align(pc) + ((hword as u32 & 0xFF) << 2);
                 Instruction::LdrLit { rt, address }
             } else if bitset(hword, 10) {
@@ -328,15 +319,12 @@ fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
                 return id_misc(hword);
             }
             if (hword >> 11) == 0b10101 {
-                let val = ((hword & 0xFF) << 2) as u32;
+                let imm32 = ((hword & 0xFF) << 2) as u32;
                 let rd = ((hword >> 8) & 0b111) as u8;
-                return Instruction::AddSpImm {
-                    rd,
-                    val,
-                    setflags: false,
-                };
+                // A7.7.5 T1
+                return Instruction::AddSpImm {rd, imm32, setflags: false};
             }
-            Instruction::Undefined
+            Instruction::Unimplemented
         }
         0b11 => {
             if bitset(hword, 13) {
@@ -346,10 +334,10 @@ fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
             } else if bitset(hword, 12) {
                 id_conditional_branch_supc(hword, pc)
             } else {
-                Instruction::Undefined
+                Instruction::Unimplemented
             }
         }
-        _ => panic!("Unexpected pattern"),
+        _ => panic!(),
     };
 }
 
@@ -363,24 +351,54 @@ fn id_ldr_str_single(hword: u16) -> Instruction {
     let rn = ((hword >> 3) & 0b111) as u8;
     let rt = (hword & 0b111) as u8;
 
+    let shift = Shift {shift_t: ShiftType::LSL, shift_n: 0};
+
     return match op_a {
         0b0101 => match op_b {
-            0b000 => {
-                // p388
-                Instruction::StrReg { rt, rm, rn, shift: Shift {shift_t: ShiftType::LSL, shift_n: 0}}
-            }
-            0b100 => {
-                // p257 T1
-                Instruction::LdrReg { rt, rm, rn, shift: Shift {shift_t: ShiftType::LSL, shift_n: 0}}
-            }
-            _ => Instruction::Unimplemented,
+            0b000 => Instruction::StrReg {rt, rm, rn, shift}, // A7.7.162 T1
+            0b001 => Instruction::StrhReg {rt, rm, rn, shift}, // A7.7.171 T1
+            0b010 => Instruction::StrbReg {rt, rm, rn, shift}, // A7.7.164 T1
+            0b011 => Instruction::LdrsbReg {rt, rm, rn, shift}, // A7.7.61 T1
+            0b100 => Instruction::LdrReg {rt, rm, rn, shift}, // A7.7.45 T1
+            0b101 => Instruction::LdrhReg {rt, rm, rn, shift}, // A7.7.57 T1
+            0b110 => Instruction::LdrbReg {rt, rm, rn, shift}, // A7.7.48 T1
+            0b111 => Instruction::LdrshReg {rt, rm, rn, shift}, // A7.7.48 T1
+            _ => panic!(),
         },
-        0b0110 if op_c => {
-            // p243 T1
+        0b0110 => {
             let offset = ((hword >> 4) & (0b1_1111 << 2)) as i32;
-            Instruction::LdrImm { rn, rt, offset, index: true, wback: false }
+            if op_c {
+                Instruction::LdrImm {rn, rt, offset, index: true, wback: false} // A7.7.43 T1
+            } else {
+                Instruction::StrImm {rn, rt, offset, index: true, wback: false} // A7.7.161 T1
+            }
         }
-        _ => Instruction::Unimplemented,
+        0b0111 => {
+            let offset = ((hword >> 6) & 0b1_1111) as i32;
+            if op_c {
+                Instruction::LdrbImm {rt, rn, offset, index: true, wback: true} // A7.7.46 T1
+            } else {
+                Instruction::StrbImm {rt, rn, offset, index: true, wback: true} // A7.7.163 T1
+            }
+        }
+        0b1000 => {
+            let offset = ((hword >> 5) & (0b1_1111 << 1)) as i32;
+            if op_c {
+                Instruction::LdrhImm {rt, rn, offset, index: true, wback: true} // A7.7.55 T1
+            } else {
+                Instruction::StrhImm {rt, rn, offset, index: true, wback: true} // A7.7.170 T1
+            }
+        }
+        0b1001 => {
+            let rt = ((hword >> 8) & 0b111) as u8;
+            let offset = ((hword & 0xFF) << 2) as i32;
+            if op_c {
+                Instruction::LdrImm {rt, rn: 13, offset, index: true, wback: true} // A7.7.43 T2
+            } else {
+                Instruction::StrImm {rt, rn: 13, offset, index: true, wback: true} // A7.7.161 T2
+            }
+        }
+        _ => panic!(),
     };
 }
 
@@ -421,7 +439,7 @@ fn id_shift_add_sub_move_cmp(hword: u16) -> Instruction {
 
     let op1 = hword >> 12;
     let rd = ((hword >> 8) & 0b111) as u8;
-    let val = (hword & 0xFF) as u32;
+    let imm32 = (hword & 0xFF) as u32;
 
     return match op1 {
         0b00 => {
@@ -451,50 +469,40 @@ fn id_shift_add_sub_move_cmp(hword: u16) -> Instruction {
             }
         }
         0b10 => {
-            if (op1 & 0b100) > 0 {
-                Instruction::Unimplemented
+            if bitset(hword, 11) {
+                // A7.7.27 T1
+                Instruction::CmpImm {rn: rd, imm32}
             } else {
-                Instruction::MovImm {
-                    rd,
-                    val,
-                    setflags: true,
-                    carry: CarryChange::Same,
-                }
+                // A7.7.76 T1
+                Instruction::MovImm {rd, imm32, setflags: true, carry: CarryChange::Same}
             }
         }
         0b11 => {
             if !bitset(hword, 11) {
                 // A7.7.3 T2
-                Instruction::AddImm {rd, rn: rd, imm32: val, setflags: true}
+                Instruction::AddImm {rd, rn: rd, imm32, setflags: true}
             } else {
                 // A7.7.175 T2
-                Instruction::SubImm {rd, rn: rd, imm32: val, setflags: true}
+                Instruction::SubImm {rd, rn: rd, imm32, setflags: true}
             }
         }
-        _ => Instruction::Unimplemented,
+        _ => panic!(),
     }
 }
 
 fn id_add_sub(hword: u16) -> Instruction {
     // A5.2.1
-    assert!(hword & (0b1111 << 12) == (0b0001 << 12));
-
+    assert!(hword & (0b1111_1 << 11) == (0b0001_1 << 11));
     let rm = ((hword >> 6) & 0b111) as u8;
     let rn = ((hword >> 3) & 0b111) as u8;
     let rd = (hword & 0b111) as u8;
     let shift = Shift {shift_t: ShiftType::LSL, shift_n: 0};
+    let imm32 = ((hword >> 6) & 0b111) as u32;
     return match (hword >> 9) & 0b11 {
-        0b00 => Instruction::AddReg {
-            // p190 T1
-            rd,
-            rm,
-            rn,
-            shift,
-            setflags: true,
-        },
+        0b00 => Instruction::AddReg {rd, rm, rn, shift, setflags: true}, // A7.7.4 T1
         0b01 => Instruction::SubReg {rd, rn, rm, shift, setflags: true}, // A7.7.175 T1
-        0b10 => Instruction::AddImm {rd, rn, setflags: true, imm32: ((hword >> 6) & 0b111) as u32},
-        0b11 => Instruction::Unimplemented,
+        0b10 => Instruction::AddImm {rd, rn, imm32, setflags: true}, // A7.7.3 T1
+        0b11 => Instruction::SubImm {rd, rn, imm32, setflags: true}, // A7.7.174 T1
         _ => panic!(),
     };
 }
@@ -752,27 +760,17 @@ fn id_data_proc_modified_immediate(word: u32) -> Instruction {
         0b0000 if !rd_is_pc => {
             let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
             let (imm32, carry) = thumb_expand_imm_c(imm12);
-            Instruction::AndImm { rd, rn, val: imm32, setflags: bitset(word, 20), carry }
+            Instruction::AndImm { rd, rn, imm32, setflags: bitset(word, 20), carry }
         }
         0b0010 if rn_is_pc => {
             let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
             let (imm32, carry) = thumb_expand_imm_c(imm12);
-            Instruction::MovImm {
-                rd,
-                val: imm32,
-                setflags: bitset(word, 20),
-                carry,
-            }
+            Instruction::MovImm {rd, imm32, setflags: bitset(word, 20), carry}
         }
         0b1000 if !rn_is_pc => {
             let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
             let imm32 = thumb_expand_imm(imm12);
-            Instruction::AddImm {
-                rd,
-                rn,
-                imm32,
-                setflags: bitset(word, 20),
-            }
+            Instruction::AddImm {rd, rn, imm32, setflags: bitset(word, 20)}
         }
         _ => Instruction::Unimplemented,
     };
@@ -793,12 +791,7 @@ fn id_data_proc_plain_binary_immediate(word: u32) -> Instruction {
                 + ((word >> 15) & (0b1 << 11))
                 + ((word >> 4) & (0b111 << 8))
                 + (word & 0xFF);
-            Instruction::MovImm {
-                rd,
-                val: imm32,
-                setflags: false,
-                carry: CarryChange::Same,
-            }
+            Instruction::MovImm {rd, imm32, setflags: false, carry: CarryChange::Same}
         }
         _ => Instruction::Unimplemented,
     };
