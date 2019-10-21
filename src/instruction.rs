@@ -73,19 +73,28 @@ pub enum ShiftType {
 
 #[derive(Debug)]
 pub enum Instruction {
+    AdcReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     AddImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
     AddReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     AddSpImm {rd: u8, imm32: u32, setflags: bool},
     AndImm {rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange},
+    AndReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     AsrImm {rd: u8, rm: u8, shift: Shift, setflags: bool},
+    AsrReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     Branch {address: u32},
     CondBranch {address: u32, cond: Condition},
+    BicReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     LinkedBranch {address: u32},
+    Blx {rm: u8},
     BranchExchange {rm: u8},
+    CmnReg {rm: u8, rn: u8, shift: Shift},
     CmpImm {rn: u8, imm32: u32},
     CmpReg {rm: u8, rn: u8, shift: Shift},
+    EorReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     LslImm {rd: u8, rm: u8, shift: Shift},
+    LslReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     LsrImm {rd: u8, rm: u8, shift: Shift},
+    LsrReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     Ldm {rn: u8, registers: u16, wback: bool},
     Ldmdb {rn: u8, registers: u16, wback: bool},
     LdrImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
@@ -100,8 +109,14 @@ pub enum Instruction {
     Ldrt {rn: u8, rt: u8, offset: i32},
     MovImm {rd: u8, imm32: u32, setflags: bool, carry: CarryChange},
     MovReg {rd: u8, rm: u8, setflags: bool},
+    Mul {rd: u8, rn: u8, rm: u8, setflags: bool},
+    MvnReg {rd: u8, rm: u8, shift: Shift, setflags: bool},
+    OrrReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     Pop {registers: u16},
     Push {registers: u16},
+    RorReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
+    RsbImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
+    SbcReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     Stm {rn: u8, registers: u16, wback: bool},
     Stmdb {rn: u8, registers: u16, wback: bool},
     StrImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
@@ -307,7 +322,7 @@ fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
             } else if bitset(hword, 11) {
                 let rt = ((hword >> 8) & 0b111) as u8;
                 let address = word_align(pc) + ((hword as u32 & 0xFF) << 2);
-                Instruction::LdrLit { rt, address }
+                Instruction::LdrLit { rt, address } // A7.7.44 T1
             } else if bitset(hword, 10) {
                 id_special_data_branch(hword)
             } else {
@@ -508,48 +523,60 @@ fn id_add_sub(hword: u16) -> Instruction {
 }
 
 fn id_data_processing(hword: u16) -> Instruction {
-    assert!((hword >> 10) == 0b010000);
+    assert!(hword & (0b1111_11 << 10) == (0b0100_00 << 10));
     let op = (hword >> 6) & 0b1111;
+
+    let rd = (hword & 0b111) as u8;
+    let rm = ((hword >> 3) & 0b111) as u8;
+    let shift = Shift {shift_t: ShiftType::LSL, shift_n: 0};
+
     return match op {
-        0b1010 => {
-            // p222 T1
-            let rn = (hword & 0b111) as u8;
-            let rm = ((hword >> 3) & 0b111) as u8;
-            Instruction::CmpReg { rm, rn, shift: Shift {shift_t: ShiftType::LSL, shift_n: 0}}
-        }
-        _ => Instruction::Unimplemented,
+        0b0000 => Instruction::AndReg {rd, rm, rn: rd, shift, setflags: true}, // A7.7.9 T1
+        0b0001 => Instruction::EorReg {rd, rm, rn: rd, shift, setflags: true}, // A7.7.36 T1
+        0b0010 => Instruction::LslReg {rd, rm, rn: rd, shift, setflags: true}, // A7.7.69 T1
+        0b0011 => Instruction::LsrReg {rd, rm, rn: rd, shift, setflags: true}, // A7.7.71 T1
+        0b0100 => Instruction::AsrReg {rd, rm, rn: rd, shift, setflags: true}, // A7.7.11 T1
+        0b0101 => Instruction::AdcReg {rd, rm, rn: rd, shift, setflags: true}, // A7.7.2 T1
+        0b0110 => Instruction::SbcReg {rd, rm, rn: rd, shift, setflags: true}, // A7.7.125 T1
+        0b0111 => Instruction::RorReg {rd, rm, rn: rd, shift, setflags: true}, // A7.7.117 T1
+        0b1000 => Instruction::TstReg {rm, rn: rd, shift}, // A7.7.189 T1
+        0b1001 => Instruction::RsbImm {rd, rn: rm, imm32: 0, setflags: true}, // A7.7.119 T1
+        0b1010 => Instruction::CmpReg {rm, rn: rd, shift}, // A7.7.28 T1
+        0b1011 => Instruction::CmnReg {rm, rn: rd, shift}, // A7.7.26 T1
+        0b1100 => Instruction::OrrReg {rd, rm, rn: rd, shift, setflags: true}, // A7.7.92 T1
+        0b1101 => Instruction::Mul {rd, rm: rd, rn: rm, setflags: true}, // A7.7.84 T1
+        0b1110 => Instruction::BicReg {rd, rm, rn: rd, shift, setflags: true}, // A7.7.16 T1
+        0b1111 => Instruction::MvnReg {rd, rm, shift, setflags: true}, // A7.7.86 T1
+        _ => panic!(),
     };
 }
 
 fn id_special_data_branch(hword: u16) -> Instruction {
-    assert!((hword >> 10) == 0b010001);
+    // A5.2.3
+    assert!(hword & (0b1111_11 << 10) == (0b0100_01 << 10));
     let op = (hword >> 7) & 0b111;
     let rm = ((hword >> 3) & 0b1111) as u8;
     let rn = (((hword >> 4) & (1 << 3)) + (hword & 0b111)) as u8;
+    let shift = Shift {shift_t: ShiftType::LSL, shift_n: 0};
     return match op {
-        0b000 | 0b001 => Instruction::AddReg {
-            // p190 T2
-            rd: rn,
-            rm,
-            rn,
-            shift: Shift {shift_t: ShiftType::LSL, shift_n: 0},
-            setflags: false,
-        },
-        0b010 => {
-            if bitset(hword, 6) {
+        0b000 | 0b001 => {
+            if rn == 15 && rm == 15 {
                 Instruction::Unpredictable
             } else {
-                // p222 T2
-                Instruction::CmpReg { rm, rn, shift: Shift {shift_t: ShiftType::LSL, shift_n: 0}}
+                Instruction::AddReg {rd: rn, rm, rn, shift, setflags: false} // A7.7.4 T2
             }
         }
-        0b100 | 0b101 => Instruction::MovReg {
-            rd: rn,
-            rm,
-            setflags: false,
-        },
-        0b110 => Instruction::BranchExchange { rm },
-        _ => Instruction::Unimplemented,
+        0b010 => {
+            if (rn < 8 && rm < 8) || rn == 15 || rm == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::CmpReg {rm, rn, shift} // A7.7.28 T2
+            }
+        }
+        0b100 | 0b101 => Instruction::MovReg {rd: rn, rm, setflags: false}, // A7.7.77 T1
+        0b110 => Instruction::BranchExchange {rm}, // A7.7.20 T1
+        0b111 => Instruction::Blx {rm}, // A7.7.19 T1
+        _ => panic!(),
     };
 }
 
