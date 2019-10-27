@@ -4,15 +4,6 @@
 use crate::Shift;
 
 #[derive(Copy, Clone, Debug)]
-pub enum RegFormat {
-    Bin, // binary
-    Oct, // octal
-    Dec, // unsigned decimal
-    Sig, // signed decimal
-    Hex, // hexadecimal
-}
-
-#[derive(Copy, Clone, Debug)]
 pub enum Condition {
     Equal = 0b0000,
     NotEqual = 0b0001,
@@ -32,7 +23,8 @@ pub enum Condition {
 }
 
 impl Condition {
-    fn from(code: i32) -> Condition {
+    fn from<T: Into<u32>>(code: T) -> Condition {
+        let code = code.into();
         assert!(code <= 0b1110);
         return match code {
             0b0000 => Condition::Equal,
@@ -50,7 +42,7 @@ impl Condition {
             0b1100 => Condition::SHigher,
             0b1101 => Condition::SLowerSame,
             0b1110 => Condition::Always,
-            _ => panic!("Unexpected code"),
+            _ => panic!(),
         };
     }
 }
@@ -77,6 +69,7 @@ pub enum Instruction {
     AddImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
     AddReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     AddSpImm {rd: u8, imm32: u32, setflags: bool},
+    Adr {rd: u8, address: u32},
     AndImm {rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange},
     AndReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     AsrImm {rd: u8, rm: u8, shift: Shift, setflags: bool},
@@ -137,9 +130,11 @@ pub enum Instruction {
     SubImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
     SubReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     SubSpImm {rd: u8, imm32: u32, setflags: bool},
+    Svc {imm8: u8},
     Sxtb {rd: u8, rm: u8, rotation: u32},
     Sxth {rd: u8, rm: u8, rotation: u32},
     TstReg {rn: u8, rm: u8, shift: Shift},
+    Udf {imm32: u32},
     Uxtb {rd: u8, rm: u8, rotation: u32},
     Uxth {rd: u8, rm: u8, rotation: u32},
     Wfe,
@@ -150,7 +145,6 @@ pub enum Instruction {
     Unpredictable,
 
     Unimplemented,
-    Format {reg: usize, kind: RegFormat},
 }
 
 impl Instruction {
@@ -329,42 +323,52 @@ fn decode_imm_shift(encoded: u16) -> Shift {
 }
 
 fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
-    return match hword >> 14 {
-        0b00 => id_shift_add_sub_move_cmp(hword),
-        0b01 => {
-            if bitset(hword, 13) || bitset(hword, 12) {
-                id_ldr_str_single(hword)
-            } else if bitset(hword, 11) {
-                let rt = ((hword >> 8) & 0b111) as u8;
-                let address = word_align(pc) + ((hword as u32 & 0xFF) << 2);
-                Instruction::LdrLit { rt, address } // A7.7.44 T1
-            } else if bitset(hword, 10) {
-                id_special_data_branch(hword)
+    return match hword >> 10 {
+        0b00_0000..=0b00_1111 => id_shift_add_sub_move_cmp(hword),
+        0b01_0000 => id_data_processing(hword),
+        0b01_0001 => id_special_data_branch(hword),
+        0b01_0010..=0b01_0011 => {
+            let rt = ((hword >> 8) & 0b111) as u8;
+            let address = word_align(pc) + ((hword as u32 & 0xFF) << 2);
+            Instruction::LdrLit { rt, address } // A7.7.44 T1
+        }
+        0b01_0100..=0b01_0111 |
+        0b01_1000..=0b01_1111 |
+        0b10_0000..=0b10_0111 => id_ldr_str_single(hword),
+        0b10_1000..=0b10_1001 => {
+            let rd = ((hword >> 8) & 0b111) as u8;
+            let imm32 = ((hword & 0xFF) << 2) as u32;
+            let address = word_align(pc) + imm32;
+            Instruction::Adr {rd, address} // A7.7.7 T1
+        }
+        0b10_1010..=0b10_1011 => {
+            let imm32 = ((hword & 0xFF) << 2) as u32;
+            let rd = ((hword >> 8) & 0b111) as u8;
+            Instruction::AddSpImm {rd, imm32, setflags: false} // A7.7.5 T1
+        }
+        0b10_1100..=0b10_1111 => id_misc(hword),
+        0b11_0000..=0b11_0001 => {
+            let registers = (hword & 0xFF) as u16;
+            if registers == 0 {
+                Instruction::Unpredictable
             } else {
-                id_data_processing(hword)
+                Instruction::Stm {rn: ((hword >> 8) & 0b111) as u8, registers, wback: true} // A7.7.159 T1
             }
         }
-        0b10 => {
-            if (hword >> 12) == 0b1011 {
-                return id_misc(hword);
-            }
-            if (hword >> 11) == 0b10101 {
-                let imm32 = ((hword & 0xFF) << 2) as u32;
-                let rd = ((hword >> 8) & 0b111) as u8;
-                return Instruction::AddSpImm {rd, imm32, setflags: false}; // A7.7.5 T1
-            }
-            Instruction::Unimplemented
-        }
-        0b11 => {
-            if bitset(hword, 13) {
-                let offset = sign_extend(((hword & 0x7FF) << 1) as u32, 11);
-                let address = ((pc as i32) + offset) as u32;
-                Instruction::Branch { address }
-            } else if bitset(hword, 12) {
-                id_conditional_branch_supc(hword, pc)
+        0b11_0010..=0b11_0011 => {
+            let rn = ((hword >> 8) & 0b111) as u8;
+            let registers = (hword & 0xFF) as u16;
+            if registers == 0 {
+                Instruction::Unpredictable
             } else {
-                Instruction::Unimplemented
+                Instruction::Stm {rn, registers, wback: !bitset(registers, rn.into())} // A7.7.41 T1
             }
+        }
+        0b11_0100..=0b11_0111 => id_conditional_branch_supc(hword, pc),
+        0b11_1000..=0b11_1001 => {
+            let offset = sign_extend(((hword & 0x7FF) << 1) as u32, 11) as u32;
+            let address = pc.wrapping_add(offset);
+            Instruction::Branch { address } // A7.7.12 T2
         }
         _ => panic!(),
     };
@@ -487,16 +491,16 @@ fn id_if_then_hints(hword: u16) -> Instruction {
 }
 
 fn id_conditional_branch_supc(hword: u16, pc: u32) -> Instruction {
-    assert!((hword >> 12) == 0b1101);
+    assert!((hword & (0b1111 << 12)) == (0b1101 << 12));
     let op = (hword >> 8) & 0b1111;
     return match op {
-        0b1110 => Instruction::Unimplemented,
-        0b1111 => Instruction::Unimplemented, // SUP
+        0b1110 => Instruction::Udf {imm32: (hword & 0xFF) as u32}, // A7.7.194 T1
+        0b1111 => Instruction::Svc {imm8: (hword & 0xFF) as u8}, // A7.7.178 T1
         _ => {
-            let imm32 = sign_extend(((hword & 0xFF) << 1) as u32, 8);
-            let address = ((pc as i32) + imm32) as u32;
-            let cond = Condition::from(((hword >> 8) & 0b1111) as i32);
-            Instruction::CondBranch { address, cond }
+            let imm32 = sign_extend(((hword & 0xFF) << 1) as u32, 8) as u32;
+            let address = pc.wrapping_add(imm32);
+            let cond = Condition::from((hword >> 8) & 0b1111);
+            Instruction::CondBranch { address, cond } // A7.7.12 T1
         }
     };
 }

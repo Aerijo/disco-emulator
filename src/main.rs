@@ -7,7 +7,7 @@ extern crate goblin;
 extern crate regex;
 
 mod instruction;
-use instruction::{bitset, add_with_carry, shift, shift_c, align, CarryChange, Condition, Instruction, RegFormat, ShiftType};
+use instruction::{bitset, add_with_carry, shift, shift_c, align, CarryChange, Condition, Instruction, ShiftType};
 
 mod peripherals;
 use peripherals::Peripherals;
@@ -28,6 +28,15 @@ use std::option::Option;
 use std::string::String;
 use std::time::SystemTime;
 use std::vec::Vec;
+
+#[derive(Copy, Clone, Debug)]
+pub enum RegFormat {
+    Bin, // binary
+    Oct, // octal
+    Dec, // unsigned decimal
+    Sig, // signed decimal
+    Hex, // hexadecimal
+}
 
 #[derive(Debug)]
 enum Exception {
