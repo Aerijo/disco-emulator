@@ -4,7 +4,7 @@ mod rcc;
 use rcc::RCC;
 
 pub trait Peripheral {
-    fn read(&self, offset: u32, size: usize) -> Result<u32, String>;
+    fn read(&mut self, offset: u32, size: usize) -> Result<u32, String>;
     fn write(&mut self, offset: u32, size: usize) -> Result<(), String>;
     fn reset(&mut self);
 }
@@ -103,7 +103,7 @@ impl Peripherals {
         return Peripherals { ..Default::default() };
     }
 
-    pub fn read(&self, address: u32, size: usize) -> Result<u32, String> {
+    pub fn read(&mut self, address: u32, size: usize) -> Result<u32, String> {
         println!("Reading peripheral at {:#10X}", address);
         assert!(size == 1 || size == 2 || size == 4);
         if !(0x4000_0000..=0x5FFF_FFFF).contains(&address) {

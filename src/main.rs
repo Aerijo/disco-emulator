@@ -7,7 +7,7 @@ extern crate goblin;
 extern crate regex;
 
 mod instruction;
-use instruction::{bitset, add_with_carry, shift, shift_c, align, CarryChange, Condition, Instruction, ShiftType};
+use instruction::{CarryChange, Condition, Instruction, ShiftType};
 
 mod peripherals;
 use peripherals::Peripherals;
@@ -16,6 +16,7 @@ mod cpu;
 use cpu::{CPU};
 
 mod utils;
+use utils::bits::{bitset, add_with_carry, shift, shift_c, align};
 
 use goblin::elf::Elf;
 use regex::Regex;
@@ -30,7 +31,7 @@ use std::time::SystemTime;
 use std::vec::Vec;
 
 #[derive(Copy, Clone, Debug)]
-pub enum RegFormat {
+enum RegFormat {
     Bin, // binary
     Oct, // octal
     Dec, // unsigned decimal
