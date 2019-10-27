@@ -84,13 +84,17 @@ pub enum Instruction {
     Branch {address: u32},
     CondBranch {address: u32, cond: Condition},
     BicReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
+    Bkpt {imm8: u8},
     LinkedBranch {address: u32},
     Blx {rm: u8},
     BranchExchange {rm: u8},
+    Cbz {rn: u8, imm32: u32, nonzero: bool},
     CmnReg {rm: u8, rn: u8, shift: Shift},
     CmpImm {rn: u8, imm32: u32},
     CmpReg {rm: u8, rn: u8, shift: Shift},
+    Cps {enable: bool, affect_pri: bool, affect_fault: bool},
     EorReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
+    It {firstcond: u8, mask: u8},
     LslImm {rd: u8, rm: u8, shift: Shift},
     LslReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     LsrImm {rd: u8, rm: u8, shift: Shift},
@@ -111,12 +115,17 @@ pub enum Instruction {
     MovReg {rd: u8, rm: u8, setflags: bool},
     Mul {rd: u8, rn: u8, rm: u8, setflags: bool},
     MvnReg {rd: u8, rm: u8, shift: Shift, setflags: bool},
+    Nop,
     OrrReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     Pop {registers: u16},
     Push {registers: u16},
+    Rev {rd: u8, rm: u8},
+    Rev16 {rd: u8, rm: u8},
+    Revsh {rd: u8, rm: u8},
     RorReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     RsbImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
     SbcReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
+    Sev,
     Stm {rn: u8, registers: u16, wback: bool},
     Stmdb {rn: u8, registers: u16, wback: bool},
     StrImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
@@ -127,7 +136,15 @@ pub enum Instruction {
     StrhReg {rn: u8, rt: u8, rm: u8, shift: Shift},
     SubImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
     SubReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
+    SubSpImm {rd: u8, imm32: u32, setflags: bool},
+    Sxtb {rd: u8, rm: u8, rotation: u32},
+    Sxth {rd: u8, rm: u8, rotation: u32},
     TstReg {rn: u8, rm: u8, shift: Shift},
+    Uxtb {rd: u8, rm: u8, rotation: u32},
+    Uxth {rd: u8, rm: u8, rotation: u32},
+    Wfe,
+    Wfi,
+    Yield,
 
     Undefined,
     Unpredictable,
@@ -311,8 +328,6 @@ fn decode_imm_shift(encoded: u16) -> Shift {
     }
 }
 
-// NOTE: pc value is 4 bytes ahead of instruction start. All(?) instructions that use the PC
-// assume this when calculating offsets (see page 124).
 fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
     return match hword >> 14 {
         0b00 => id_shift_add_sub_move_cmp(hword),
@@ -336,8 +351,7 @@ fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
             if (hword >> 11) == 0b10101 {
                 let imm32 = ((hword & 0xFF) << 2) as u32;
                 let rd = ((hword >> 8) & 0b111) as u8;
-                // A7.7.5 T1
-                return Instruction::AddSpImm {rd, imm32, setflags: false};
+                return Instruction::AddSpImm {rd, imm32, setflags: false}; // A7.7.5 T1
             }
             Instruction::Unimplemented
         }
@@ -420,17 +434,56 @@ fn id_ldr_str_single(hword: u16) -> Instruction {
 fn id_misc(hword: u16) -> Instruction {
     assert!((hword & (0b1111 << 12)) == 0b1011 << 12);
 
-    let op1 = (hword >> 9) & 0b111;
-    return match op1 {
-        0b010 => {
-            let mut registers = hword & 0xFF;
-            if bitset(hword, 8) {
-                registers += 1 << 14;
+    return match (hword >> 5) & 0x7F {
+        0b011_0011 => {
+            if (hword & 0b11) == 0 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::Cps {enable: bitset(hword, 4), affect_pri: bitset(hword, 1), affect_fault: bitset(hword, 0)} // B5.2.1 T1
             }
-            Instruction::Push { registers }
         }
-        _ => Instruction::Unimplemented,
+        0b000_0000..=0b000_0011 => Instruction::AddSpImm {rd: 13, imm32: ((hword & 0x3F) << 2) as u32, setflags: false}, // A7.7.5 T2
+        0b000_0100..=0b000_0111 => Instruction::SubSpImm {rd: 13, imm32: ((hword & 0x3F) << 2) as u32, setflags: false}, // A7.7.176 T1
+        0b000_1000..=0b000_1111 |
+        0b001_1000..=0b001_1111 |
+        0b100_1000..=0b100_1111 |
+        0b101_1000..=0b101_1111 => {
+            let rn = (hword & 0b111) as u8;
+            let imm32 = (((hword & (0x1F << 3)) >> 2) + ((hword & 0b1 << 9) >> 3)) as u32;
+            Instruction::Cbz {rn, imm32, nonzero: bitset(hword, 11)} // A7.7.21 T1
+        }
+        0b001_0000..=0b001_0001 => Instruction::Sxth {rd: (hword & 0b111) as u8, rm: ((hword >> 3) & 0b111) as u8, rotation: 0}, // A7.7.184 T1
+        0b001_0010..=0b001_0011 => Instruction::Sxtb {rd: (hword & 0b111) as u8, rm: ((hword >> 3) & 0b111) as u8, rotation: 0}, // A7.7.182 T1
+        0b001_0100..=0b001_0101 => Instruction::Uxth {rd: (hword & 0b111) as u8, rm: ((hword >> 3) & 0b111) as u8, rotation: 0}, // A7.7.223 T1
+        0b001_0110..=0b001_0111 => Instruction::Uxtb {rd: (hword & 0b111) as u8, rm: ((hword >> 3) & 0b111) as u8, rotation: 0}, // A7.7.221 T1
+        0b010_0000..=0b010_1111 => Instruction::Push {registers: ((hword << 6) & (0b1 << 14)) + (hword & 0xFF)}, // A7.7.101 T1
+        0b101_0000..=0b101_0001 => Instruction::Rev {rd: (hword & 0b111) as u8, rm: ((hword >> 3) & 0b111) as u8}, // A7.7.113 T1
+        0b101_0010..=0b101_0011 => Instruction::Rev16 {rd: (hword & 0b111) as u8, rm: ((hword >> 3) & 0b111) as u8}, // A7.7.114 T1
+        0b101_0110..=0b101_0111 => Instruction::Revsh {rd: (hword & 0b111) as u8, rm: ((hword >> 3) & 0b111) as u8}, // A7.7.115 T1
+        0b110_0000..=0b110_1111 => Instruction::Pop {registers: ((hword << 6) & (0b1 << 15)) + (hword & 0xFF)}, // A7.7.99 T1
+        0b111_0000..=0b111_0111 => Instruction::Bkpt {imm8: (hword & 0xFF) as u8}, // A7.7.17 T1
+        0b111_1000..=0b111_1111 => id_if_then_hints(hword),
+        _ => Instruction::Undefined, // intentional
     };
+}
+
+fn id_if_then_hints(hword: u16) -> Instruction {
+    assert!((hword & (0b1111_1111 << 8)) == (0b1011_1111 << 8));
+    let op_a = (hword >> 4) & 0xF;
+    let op_b = hword & 0xF;
+
+    return if op_b != 0 {
+        Instruction::It {firstcond: op_a as u8, mask: op_b as u8} // A7.7.38 T1
+    } else {
+        match op_a {
+           0b0000 => Instruction::Nop, // A7.7.88 T1
+           0b0001 => Instruction::Yield, // A7.7.263 T1
+           0b0010 => Instruction::Wfe, // A7.7.261 T1
+           0b0011 => Instruction::Wfi, // A7.7.262 T1
+           0b0100 => Instruction::Sev, // A7.7.129 T1
+           _ => Instruction::Nop,
+       }
+    }
 }
 
 fn id_conditional_branch_supc(hword: u16, pc: u32) -> Instruction {

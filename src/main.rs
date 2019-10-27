@@ -870,9 +870,8 @@ impl Board {
 
     fn it(&mut self, _firstcond: u8, _mask: u8) {
         // A7.7.38
-        // TODO. Note a branch may land within an IT block, so we cannot just treat IT blocks separately.
-        // we need to actually have an IT state of the board / CPU itself, and check the conditions before each
-        // instruction
+        // TODO. Note a branch may _not_ go into an IT block, so we are free to
+        // pass the ITSTATE and do whatever when grabbing instructions. Yay.
     }
 
     fn ldc_imm(&mut self) {
