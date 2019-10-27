@@ -72,6 +72,7 @@ pub enum ShiftType {
 
 #[derive(Debug)]
 pub enum Instruction {
+    AdcImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
     AdcReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     AddImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
     AddReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
@@ -83,16 +84,19 @@ pub enum Instruction {
     AsrReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     Branch {address: u32},
     CondBranch {address: u32, cond: Condition},
+    BicImm {rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange},
     BicReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     Bkpt {imm8: u8},
     LinkedBranch {address: u32},
     Blx {rm: u8},
     BranchExchange {rm: u8},
     Cbz {rn: u8, imm32: u32, nonzero: bool},
+    CmnImm {rn: u8, imm32: u32},
     CmnReg {rm: u8, rn: u8, shift: Shift},
     CmpImm {rn: u8, imm32: u32},
     CmpReg {rm: u8, rn: u8, shift: Shift},
     Cps {enable: bool, affect_pri: bool, affect_fault: bool},
+    EorImm {rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange},
     EorReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     It {firstcond: u8, mask: u8},
     LslImm {rd: u8, rm: u8, shift: Shift},
@@ -118,8 +122,11 @@ pub enum Instruction {
     MovImm {rd: u8, imm32: u32, setflags: bool, carry: CarryChange},
     MovReg {rd: u8, rm: u8, setflags: bool},
     Mul {rd: u8, rn: u8, rm: u8, setflags: bool},
+    MvnImm {rd: u8, imm32: u32, setflags: bool, carry: CarryChange},
     MvnReg {rd: u8, rm: u8, shift: Shift, setflags: bool},
     Nop,
+    OrnImm {rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange},
+    OrrImm {rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange},
     OrrReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     Pop {registers: u16},
     Push {registers: u16},
@@ -128,6 +135,7 @@ pub enum Instruction {
     Revsh {rd: u8, rm: u8},
     RorReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     RsbImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
+    SbcImm {rd: u8, rn: u8, imm32: u32, setflags: bool},
     SbcReg {rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool},
     Sev,
     Stm {rn: u8, registers: u16, wback: bool},
@@ -150,6 +158,8 @@ pub enum Instruction {
     Sxth {rd: u8, rm: u8, rotation: u32},
     Tbb {rn: u8, rm: u8},
     Tbh {rn: u8, rm: u8},
+    TeqImm {rn: u8, imm32: u32, carry: CarryChange},
+    TstImm {rn: u8, imm32: u32, carry: CarryChange},
     TstReg {rn: u8, rm: u8, shift: Shift},
     Udf {imm32: u32},
     Uxtb {rd: u8, rm: u8, rotation: u32},
@@ -159,7 +169,7 @@ pub enum Instruction {
     Yield,
 
     Undefined,
-    Unpredictable,
+    Unpredictable, // Can execute / treat as UNDEFINED
 
     Unimplemented,
 }

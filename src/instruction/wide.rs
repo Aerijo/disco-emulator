@@ -55,6 +55,103 @@ pub fn get_wide_instruction(word: u32, pc: u32) -> Instruction {
     };
 }
 
+fn id_data_proc_modified_immediate(word: u32) -> Instruction {
+    // A5.3.1
+    assert!(matches(word, 15, 0b111_11_0_1_00000_0000_1, 0b111_10_0_0_00000_0000_0));
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let rd = ((word >> 8) & 0b1111) as u8;
+    let rn_is_pc = rn == 15;
+    let rd_is_pc = rd == 15;
+    let setflags = bitset(word, 20);
+    let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
+    let (imm32, carry) = thumb_expand_imm_c(imm12);
+    return match (word >> 21) & 0b1111 {
+        0b0000 => {
+            if rn == 13 || rn == 15 || rd == 13 || (rd == 15 && !setflags) {
+                Instruction::Unpredictable
+            } else if rd_is_pc {
+                Instruction::TstImm {rn, imm32, carry} // A7.7.188
+            } else {
+                Instruction::AndImm {rd, rn, imm32, setflags, carry} // A7.7.8 T1
+            }
+        }
+        0b0001 => {
+            if rd == 13 || rd == 15 || rn == 13 || rn == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::BicImm {rd, rn, imm32, setflags, carry} // A7.7.15 T1
+            }
+        }
+        0b0010 => {
+            if rd == 13 || rd == 15 || rn == 13 {
+                Instruction::Unpredictable
+            } else if rn_is_pc {
+                Instruction::MovImm {rd, imm32, setflags, carry} // A7.7.76 T2
+            } else {
+                Instruction::OrrImm {rd, rn, imm32, setflags, carry} // A7.7.91 T1
+            }
+        }
+        0b0011 => {
+            if rd == 13 || rd == 15 ||rn == 13 {
+                Instruction::Unpredictable
+            } else if rn_is_pc {
+                Instruction::MvnImm {rd, imm32, setflags, carry} // A7.7.85 T1
+            } else {
+                Instruction::OrnImm {rd, rn, imm32, setflags, carry} // A7.7.89 T1
+            }
+        }
+        0b0100 => {
+            if rn == 13 || rn == 15 || rd == 13 || (rd == 15 && !setflags) {
+                Instruction::Unpredictable
+            } else if rd_is_pc {
+                Instruction::TeqImm {rn, imm32, carry} // A7.7.186 T1
+            } else {
+                Instruction::EorImm {rd, rn, imm32, setflags, carry} // A7.7.35 T1
+            }
+        }
+        0b1000 => {
+            if rn == 15 || rd == 13 || (rd == 15 && !setflags) {
+                Instruction::Unpredictable
+            } else if rd_is_pc {
+                Instruction::CmnImm {rn, imm32} // A7.7.25 T1
+            } else {
+                Instruction::AddImm {rd, rn, imm32, setflags} // A7.7.3 T3
+            }
+        }
+        0b1010 => {
+            if rd == 13 || rd == 15 || rn == 13 || rd == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::AdcImm {rd, rn, imm32, setflags} // A7.7.1 T1
+            }
+        }
+        0b1011 => {
+            if rd == 13 || rd == 15 || rn == 13 || rd == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::SbcImm {rd, rn, imm32, setflags} // A7.7.124 T1
+            }
+        }
+        0b1101 => {
+            if rn == 15 || rd == 13 || (rd == 15 && !setflags) {
+                Instruction::Unpredictable
+            } else if rd_is_pc {
+                Instruction::CmpImm {rn, imm32} // A7.7.27 T1
+            } else {
+                Instruction::SubImm {rd, rn, imm32, setflags} // A7.7.174 T3
+            }
+        }
+        0b1110 => {
+            if rd == 13 || rd == 15 || rn == 13 || rn == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::RsbImm {rd, rn, imm32, setflags} // A7.7.119 T2
+            }
+        }
+        _ => Instruction::Undefined,
+    };
+}
+
 fn id_ldr_str_multiple(word: u32) -> Instruction {
     // A5.3.5
     assert!(matches(word, 22, 0b111_1111_00_1, 0b111_0100_00_0));
@@ -66,20 +163,23 @@ fn id_ldr_str_multiple(word: u32) -> Instruction {
         0b01 => {
             if l {
                 if wback && rn == 0b1101 {
-                    Instruction::Pop {registers} 
+                    Instruction::Pop {registers}
                 } else {
                     Instruction::Ldm {rn, registers, wback} // A7.7.41 T2
                 }
             } else {
-                Instruction::Stm {rn, registers, wback}, // A7.7.159 T2
+                Instruction::Stm {rn, registers, wback} // A7.7.159 T2
             }
         }
-        0b10 if l => Instruction::Ldmdb {rn, registers, wback},
-        0b10 if !l => {
-            if wback && rn == 0b1101 {
-                Instruction::Push {registers}
+        0b10 => {
+            if l {
+                Instruction::Ldmdb {rn, registers, wback} // A7.7.42 T1
             } else {
-                Instruction::Stmdb {rn, registers, wback}
+                if wback && rn == 0b1101 {
+                    Instruction::Push {registers} // A7.7.101 T2
+                } else {
+                    Instruction::Stmdb {rn, registers, wback} // A7.7.160 T1
+                }
             }
         }
         _ => Instruction::Undefined,
@@ -222,35 +322,6 @@ fn id_branch_and_misc(word: u32, pc: u32) -> Instruction {
     }
 
     return Instruction::Unimplemented;
-}
-
-fn id_data_proc_modified_immediate(word: u32) -> Instruction {
-    assert!((word & (0b1111_1010_0000_0000_1 << 15)) == 0b1111_0000_0000_0000_0 << 15);
-
-    let op = (word >> 21) & 0b1111;
-    let rn = ((word >> 16) & 0b1111) as u8;
-    let rn_is_pc = rn == 0b1111;
-    let rd = ((word >> 8) & 0b1111) as u8;
-    let rd_is_pc = rd == 0b1111;
-
-    return match op {
-        0b0000 if !rd_is_pc => {
-            let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
-            let (imm32, carry) = thumb_expand_imm_c(imm12);
-            Instruction::AndImm { rd, rn, imm32, setflags: bitset(word, 20), carry }
-        }
-        0b0010 if rn_is_pc => {
-            let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
-            let (imm32, carry) = thumb_expand_imm_c(imm12);
-            Instruction::MovImm {rd, imm32, setflags: bitset(word, 20), carry}
-        }
-        0b1000 if !rn_is_pc => {
-            let imm12 = ((word >> 15) & (0b1 << 11)) + ((word >> 4) & (0b111 << 8)) + (word & 0xFF);
-            let imm32 = thumb_expand_imm(imm12);
-            Instruction::AddImm {rd, rn, imm32, setflags: bitset(word, 20)}
-        }
-        _ => Instruction::Unimplemented,
-    };
 }
 
 fn id_data_proc_plain_binary_immediate(word: u32) -> Instruction {
