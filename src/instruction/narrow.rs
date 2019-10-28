@@ -275,7 +275,7 @@ fn id_misc(hword: u16) -> Instruction {
         0b101_0000..=0b101_0001 => Instruction::Rev {rd: (hword & 0b111) as u8, rm: ((hword >> 3) & 0b111) as u8}, // A7.7.113 T1
         0b101_0010..=0b101_0011 => Instruction::Rev16 {rd: (hword & 0b111) as u8, rm: ((hword >> 3) & 0b111) as u8}, // A7.7.114 T1
         0b101_0110..=0b101_0111 => Instruction::Revsh {rd: (hword & 0b111) as u8, rm: ((hword >> 3) & 0b111) as u8}, // A7.7.115 T1
-        0b110_0000..=0b110_1111 => Instruction::Pop {registers: ((hword << 6) & (0b1 << 15)) + (hword & 0xFF)}, // A7.7.99 T1
+        0b110_0000..=0b110_1111 => Instruction::Pop {registers: ((hword << 7) & (0b1 << 15)) + (hword & 0xFF)}, // A7.7.99 T1
         0b111_0000..=0b111_0111 => Instruction::Bkpt {imm8: (hword & 0xFF) as u8}, // A7.7.17 T1
         0b111_1000..=0b111_1111 => id_if_then_hints(hword),
         _ => Instruction::Undefined, // intentional

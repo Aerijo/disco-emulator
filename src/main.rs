@@ -287,7 +287,7 @@ struct Board {
     memory: MemoryBus,
     current_mode: ExecMode,
     register_formats: [RegFormat; 16],
-    branch_map: HashMap<u32, bool>,
+    branch_map: HashMap<u32, String>,
 }
 
 impl Board {
@@ -328,6 +328,7 @@ impl Board {
             Instruction::CondBranch { address, cond } => self.branch_cond(address, cond),
             Instruction::LinkedBranch { address } => self.branch_with_link(address),
             Instruction::BranchExchange { rm } => self.branch_exchange(rm),
+            Instruction::CmpImm { rn, imm32 } => self.cmp_imm(rn, imm32),
             Instruction::CmpReg { rm, rn, shift } => self.cmp_reg(rm, rn, shift),
             Instruction::LdrLit { rt, address } => self.ldr_lit(rt, address),
             Instruction::LdrImm { rt, rn, offset, index, wback } => self.ldr_imm(rt, rn, offset, index, wback),
@@ -335,7 +336,9 @@ impl Board {
             Instruction::MovImm { rd, imm32, setflags, carry } => self.mov_imm(rd, imm32, setflags, carry),
             Instruction::MovReg { rd, rm, setflags } => self.mov_reg(rd, rm, setflags),
             Instruction::OrrImm {rd, rn, imm32, setflags, carry} => self.orr_imm(rd, rn, imm32, setflags, carry),
+            Instruction::Pop { registers } => self.pop(registers),
             Instruction::Push { registers } => self.push(registers),
+            Instruction::SubImm { rd, rn, imm32, setflags } => self.sub_imm(rd, rn, imm32, setflags),
             Instruction::SubReg { rd, rm, rn, shift, setflags } => self.sub_reg(rd, rm, rn, shift, setflags),
             Instruction::StrImm { rn, rt, offset, index, wback, } => self.str_imm(rt, rn, offset, index, wback),
             Instruction::StrReg { rt, rn, rm, shift } => self.str_reg(rt, rn, rm, shift),
@@ -372,8 +375,18 @@ impl Board {
                 _ => return Err(String::from("missing symbols")),
             };
 
-            if name == "SystemInit" || name == "__libc_init_array" || name == "init" {
-                self.branch_map.insert((sym.st_value as u32) & !0b1, false);
+            match name {
+                "SystemInit" |
+                "__libc_init_array" |
+                "init" |
+                "init_joystick" |
+                "lcd_init" |
+                "lcd_write_string" |
+                "lcd_update_display" |
+                "BSP_AUDIO_OUT_Play_Sample" => {
+                    self.branch_map.insert((sym.st_value as u32) & !0b1, name.to_string());
+                }
+                _ => {}
             }
         }
 
@@ -419,11 +432,11 @@ impl Board {
     }
 
     fn read_sp(&self) -> u32 {
-        return self.read_reg(13);
+        return self.read_reg(13) & !0b11;
     }
 
-    fn set_sp(&mut self, value: u32) {
-        self.write_reg(13, value);
+    fn write_sp(&mut self, value: u32) {
+        self.write_reg(13, value & !0b11);
     }
 
     fn read_lr(&self) -> u32 {
@@ -721,13 +734,9 @@ impl Board {
 
     fn branch_with_link(&mut self, address: u32) {
         // A7.7.18
-        // NOTE: To simplify the simulator, we allow skipping
-        // certain functions. E.g., we don't need to set the clock
-        // speed.
-        println!("BMAP: {:?}", self.branch_map);
         match self.branch_map.get(&address) {
-            Some(b) if !b => {
-                println!("Skipping branch with link");
+            Some(name) => {
+                println!("Skipping branch with link to {}", name);
                 return;
             }
             _ => {}
@@ -1095,18 +1104,35 @@ impl Board {
         }
     }
 
-    fn push(&mut self, registers: u16) {
-        // A7.7.99
-        let mut sp = self.read_sp();
-        for i in (0..=14u8).rev() {
-            if !bitset(registers, i.into()) {
-                continue;
+    fn pop(&mut self, registers: u16) {
+        let mut address = self.read_sp();
+        self.write_sp(address + 4 * registers.count_ones());
+
+        for i in 0..14u8 {
+            if bitset(registers, i.into()) {
+                self.write_reg(i, self.memory.read_mem_a(address, 4).unwrap());
+                address += 4;
             }
-            self.memory.write_word(sp, self.read_reg(i)).unwrap();
-            sp -= 4;
         }
 
-        self.set_sp(sp);
+        if bitset(registers, 15) {
+            self.load_write_pc(self.memory.read_mem_a(address, 4).unwrap());
+        }
+    }
+
+    fn push(&mut self, registers: u16) {
+        // A7.7.99
+        let mut address = self.read_sp() - 4 * registers.count_ones();
+        let orig_address = address;
+
+        for i in 0..=14u8 {
+            if bitset(registers, i.into()) {
+                self.memory.write_word(address, self.read_reg(i)).unwrap();
+                address += 4;
+            }
+        }
+
+        self.write_sp(orig_address);
     }
 
     fn str_imm(&mut self, rt: u8, rn: u8, offset: i32, index: bool, wback: bool) {
@@ -1202,14 +1228,17 @@ fn main() {
 
     let mut cont = true;
     loop {
+        if cont {
+            cont = board.read_pc() != 0x080196a2;
+            if !cont { println!("\n{}\n", board); }
+        }
+
         if !cont {
             print!("press enter to continue");
             io::stdout().flush().unwrap();
             let mut input = String::new();
             io::stdin().read_line(&mut input).unwrap();
             print!("\n\n");
-        } else {
-            cont = board.read_pc() != 0x0800_01C8;
         }
 
         match board.next_instruction(true) {
