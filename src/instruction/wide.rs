@@ -13,7 +13,7 @@ pub fn get_wide_instruction(word: u32, pc: u32) -> Instruction {
             } else if bitset(op2, 5) {
                 id_data_processing_shifted(word)
             } else if bitset(op2, 2) {
-                id_ldr_str_dual(word)
+                id_ldr_str_dual(word, pc)
             } else {
                 id_ldr_str_multiple(word)
             }
@@ -136,7 +136,7 @@ fn id_data_proc_modified_immediate(word: u32) -> Instruction {
             if rn == 15 || rd == 13 || (rd == 15 && !setflags) {
                 Instruction::Unpredictable
             } else if rd_is_pc {
-                Instruction::CmpImm {rn, imm32} // A7.7.27 T1
+                Instruction::CmpImm {rn, imm32} // A7.7.27 T2
             } else {
                 Instruction::SubImm {rd, rn, imm32, setflags} // A7.7.174 T3
             }
@@ -186,7 +186,7 @@ fn id_ldr_str_multiple(word: u32) -> Instruction {
     };
 }
 
-fn id_ldr_str_dual(word: u32) -> Instruction {
+fn id_ldr_str_dual(word: u32, pc: u32) -> Instruction {
     // A5.3.6
     assert!(matches(word, 22, 0b111_1111_00_1, 0b111_0100_00_1));
     let op_12 = (word >> 21) & (0b11 << 2) + (word >> 20) & 0b11;
@@ -197,10 +197,24 @@ fn id_ldr_str_dual(word: u32) -> Instruction {
     let rd2 = (word & 0xF) as u8;
     let imm32 = (word & 0xFF) << 2;
     return match op_12 {
-        0b0000 => Instruction::Strex {rn, rt, rd, imm32}, // A7.7.167 T1
-        0b0001 => Instruction::Ldrex {rn, rt, imm32}, // A7.7.52 T1
+        0b0000 => {
+            if rd == 13 || rd == 15 || rt == 13 || rt == 15 || rn == 15 || rd == rn || rd == rt {
+                Instruction::Unpredictable
+            } else {
+                Instruction::Strex {rn, rt, rd, imm32} // A7.7.167 T1
+            }
+        }
+        0b0001 => {
+            if rd != 15 || rt == 13 || rt == 15 || rn == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::Ldrex {rn, rt, imm32} // A7.7.52 T1
+            }
+        }
         0b0100 => {
-            if op_3 == 0b0100 {
+            if rd != 15 || rd2 == 13 || rd2 == 15 || rt == 13 || rt == 15 || rn == 15 || rd2 == rn || rd2 == rt {
+                Instruction::Unpredictable
+            } else if op_3 == 0b0100 {
                 Instruction::Strexb {rn, rt, rd: rd2} // A7.7.168 T1
             } else if op_3 == 0b0101 {
                 Instruction::Strexh {rn, rt, rd: rd2} // A7.7.169 T1
@@ -210,13 +224,29 @@ fn id_ldr_str_dual(word: u32) -> Instruction {
         }
         0b0101 => {
             if op_3 == 0b0000 {
-                Instruction::Tbb {rn, rm: rd2} // A7.7.185 T1
+                if rt != 15 || rd != 0 || rn == 13 || rd2 == 13 || rd2 == 15 {
+                    Instruction::Unpredictable
+                } else {
+                    Instruction::Tbb {rn, rm: rd2} // A7.7.185 T1
+                }
             } else if op_3 == 0b0001 {
-                Instruction::Tbh {rn, rm: rd2} // A7.7.185 T1
+                if rt != 15 || rd != 0 || rn == 13 || rd2 == 13 || rd2 == 15 {
+                    Instruction::Unpredictable
+                } else {
+                    Instruction::Tbh {rn, rm: rd2} // A7.7.185 T1
+                }
             } else if op_3 == 0b0100 {
-                Instruction::Ldrexb {rn, rt} // A7.7.53 T1
+                if rd != 15 || rd2 != 15 || rn == 13 || rt == 13 || rt == 15 {
+                    Instruction::Unpredictable
+                } else {
+                    Instruction::Ldrexb {rn, rt} // A7.7.53 T1
+                }
             } else if op_3 == 0b0101 {
-                Instruction::Ldrexh {rn, rt} // A7.7.54 T1
+                if rd != 15 || rd2 != 15 || rn == 13 || rt == 13 || rt == 15 {
+                    Instruction::Unpredictable
+                } else {
+                    Instruction::Ldrexh {rn, rt} // A7.7.54 T1
+                }
             } else {
                 Instruction::Undefined
             }
@@ -225,10 +255,27 @@ fn id_ldr_str_dual(word: u32) -> Instruction {
             let index = bitset(word, 24);
             let offset = if bitset(word, 23) { imm32 as i32 } else { - (imm32 as i32) };
             let wback = bitset(word, 21);
+
             if bitset(word, 20) {
-                Instruction::LdrdImm {rn, rt, rt2: rd, offset, index, wback} // A7.7.50 T1
+                if rn == 15 {
+                    if rt == 13 || rt == 15 || rd == 13 || rd == 15 || rt == rd || wback || pc != word_align(pc) {
+                        Instruction::Unpredictable
+                    } else {
+                        Instruction::LdrdLit {rt, rt2: rd, address: pc.wrapping_add(offset as u32)} // A7.7.51 T1
+                    }
+                } else {
+                    if (wback && (rn == rt || rn == rd)) || rt == 13 || rt == 15 || rd == 13 || rd == 15 || rt == rd {
+                        Instruction::Unpredictable
+                    } else {
+                        Instruction::LdrdImm {rn, rt, rt2: rd, offset, index, wback} // A7.7.50 T1
+                    }
+                }
             } else {
-                Instruction::StrdImm {rn, rt, rt2: rd, offset, index, wback} // A7.7.166 T1
+                if (wback && (rn == rt || rn == rd)) || rn == 15 || rt == 13 || rt == 15 || rd == 13 || rd == 15 {
+                    Instruction::Unpredictable
+                } else {
+                    Instruction::StrdImm {rn, rt, rt2: rd, offset, index, wback} // A7.7.166 T1
+                }
             }
         }
     }

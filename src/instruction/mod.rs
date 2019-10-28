@@ -107,6 +107,7 @@ pub enum Instruction {
     Ldmdb {rn: u8, registers: u16, wback: bool},
     LdrImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
     LdrbImm {rn: u8, rt: u8, offset: i32, index: bool, wback: bool},
+    LdrdLit {rt: u8, rt2: u8, address: u32},
     Ldrex {rn: u8, rt: u8, imm32: u32},
     Ldrexb {rn: u8, rt: u8},
     Ldrexh {rn: u8, rt: u8},

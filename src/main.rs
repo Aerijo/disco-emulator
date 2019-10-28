@@ -320,51 +320,24 @@ impl Board {
 
     fn execute(&mut self, instr: Instruction) {
         match instr {
-            Instruction::LdrLit { rt, address } => self.ldr_lit(rt, address),
-            Instruction::LdrImm {
-                rt,
-                rn,
-                offset,
-                index,
-                wback,
-            } => self.ldr_imm(rt, rn, offset, index, wback),
-            Instruction::MovImm {
-                rd,
-                imm32,
-                setflags,
-                carry,
-            } => self.mov_imm(rd, imm32, setflags, carry),
-            Instruction::MovReg { rd, rm, setflags } => {
-                self.mov_reg(rd, rm, setflags)
-            }
-            Instruction::AddImm {
-                rd,
-                rn,
-                imm32,
-                setflags,
-            } => self.add_imm(rd, rn, imm32, setflags),
-            Instruction::AddReg { rd, rm, rn, shift, setflags } => {
-                self.add_reg(rd, rm, rn, shift, setflags)
-            }
-            Instruction::SubReg { rd, rm, rn, shift, setflags } => {
-                self.sub_reg(rd, rm, rn, shift, setflags)
-            }
-            Instruction::AndImm {
-                rd,
-                rn,
-                imm32,
-                setflags,
-                carry,
-            } => self.and_imm(rd, rn, imm32, setflags, carry),
-            Instruction::Branch { address } => self.branch(address),
-            Instruction::BranchExchange { rm } => self.branch_exchange(rm),
-            Instruction::LinkedBranch { address } => self.branch_with_link(address),
-            Instruction::CondBranch { address, cond } => self.branch_cond(address, cond),
-            Instruction::CmpReg { rm, rn, shift } => self.cmp_reg(rm, rn, shift),
-            Instruction::StrImm { rn, rt, offset, index, wback, } => self.str_imm(rt, rn, offset, index, wback),
-            Instruction::Push { registers } => self.push(registers),
+            Instruction::AddImm {rd, rn, imm32, setflags} => self.add_imm(rd, rn, imm32, setflags),
+            Instruction::AddReg { rd, rm, rn, shift, setflags } => self.add_reg(rd, rm, rn, shift, setflags),
             Instruction::AddSpImm { rd, imm32, setflags } => self.add_sp_imm(rd, imm32, setflags),
+            Instruction::AndImm {rd, rn, imm32, setflags, carry} => self.and_imm(rd, rn, imm32, setflags, carry),
+            Instruction::Branch { address } => self.branch(address),
+            Instruction::CondBranch { address, cond } => self.branch_cond(address, cond),
+            Instruction::LinkedBranch { address } => self.branch_with_link(address),
+            Instruction::BranchExchange { rm } => self.branch_exchange(rm),
+            Instruction::CmpReg { rm, rn, shift } => self.cmp_reg(rm, rn, shift),
+            Instruction::LdrLit { rt, address } => self.ldr_lit(rt, address),
+            Instruction::LdrImm { rt, rn, offset, index, wback } => self.ldr_imm(rt, rn, offset, index, wback),
             Instruction::LdrReg { rt, rn, rm, shift } => self.ldr_reg(rt, rn, rm, shift),
+            Instruction::MovImm { rd, imm32, setflags, carry } => self.mov_imm(rd, imm32, setflags, carry),
+            Instruction::MovReg { rd, rm, setflags } => self.mov_reg(rd, rm, setflags),
+            Instruction::OrrImm {rd, rn, imm32, setflags, carry} => self.orr_imm(rd, rn, imm32, setflags, carry),
+            Instruction::Push { registers } => self.push(registers),
+            Instruction::SubReg { rd, rm, rn, shift, setflags } => self.sub_reg(rd, rm, rn, shift, setflags),
+            Instruction::StrImm { rn, rt, offset, index, wback, } => self.str_imm(rt, rn, offset, index, wback),
             Instruction::StrReg { rt, rn, rm, shift } => self.str_reg(rt, rn, rm, shift),
             Instruction::Undefined => {}
             Instruction::Unpredictable => {
@@ -1114,6 +1087,14 @@ impl Board {
         }
     }
 
+    fn orr_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange) {
+        let result = self.read_reg(rn) | imm32;
+        self.write_reg(rd, result);
+        if setflags {
+            self.set_flags_nz_alt_c(result, carry);
+        }
+    }
+
     fn push(&mut self, registers: u16) {
         // A7.7.99
         let mut sp = self.read_sp();
@@ -1207,7 +1188,7 @@ fn main() {
     let mut board = Board::new();
 
     match board.load_elf_from_path(
-        "/home/benjamin/gitlab/comp2300-2019-assignment-1-copy/.pio/build/disco_l476vg/firmware.elf",
+        "/home/benjamin/gitlab/2300/assignments/comp2300-2019-assignment-2-part-2/.pio/build/disco_l476vg/firmware.elf",
     ) {
         Ok(_) => {}
         Err(s) => {
