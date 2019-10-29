@@ -283,6 +283,9 @@ enum ExecMode {
 
 #[derive(Debug)]
 struct Board {
+    tick: u128,
+    samples: u128,
+    log: fs::File,
     cpu: CPU,
     memory: MemoryBus,
     current_mode: ExecMode,
@@ -293,6 +296,9 @@ struct Board {
 impl Board {
     fn new() -> Board {
         return Board {
+            tick: 0,
+            samples: 0,
+            log: fs::File::create("amplitudes.txt").unwrap(),
             cpu: CPU::new(),
             memory: MemoryBus::new(),
             current_mode: ExecMode::ModeThread,
@@ -309,11 +315,11 @@ impl Board {
         // from their position when calculating offsets (see page 124).
         let (instr, wide) = Instruction::from(val, pc + 4);
 
-        if wide {
-            println!("{:#034b} -> {:?}", val, instr);
-        } else {
-            println!("{:#018b} -> {:?}", val >> 16, instr);
-        }
+        // if wide {
+        //     println!("{:#034b} -> {:?}", val, instr);
+        // } else {
+        //     println!("{:#018b} -> {:?}", val >> 16, instr);
+        // }
 
 
         if update_pc {
@@ -324,6 +330,7 @@ impl Board {
     }
 
     fn execute(&mut self, instr: Instruction) {
+        self.tick += 1;
         match instr {
             Instruction::AddImm {rd, rn, imm32, setflags} => self.add_imm(rd, rn, imm32, setflags),
             Instruction::AddReg { rd, rm, rn, shift, setflags } => self.add_reg(rd, rm, rn, shift, setflags),
@@ -335,6 +342,7 @@ impl Board {
             Instruction::BranchExchange { rm } => self.branch_exchange(rm),
             Instruction::CmpImm { rn, imm32 } => self.cmp_imm(rn, imm32),
             Instruction::CmpReg { rm, rn, shift } => self.cmp_reg(rm, rn, shift),
+            Instruction::Cps {enable, affect_pri, affect_fault} => self.cps(enable, affect_pri, affect_pri),
             Instruction::LdrLit { rt, address } => self.ldr_lit(rt, address),
             Instruction::Ldm { rn, registers, wback } => self.ldm(rn, registers, wback),
             Instruction::LdrImm { rt, rn, offset, index, wback } => self.ldr_imm(rt, rn, offset, index, wback),
@@ -345,6 +353,7 @@ impl Board {
             Instruction::OrrImm {rd, rn, imm32, setflags, carry} => self.orr_imm(rd, rn, imm32, setflags, carry),
             Instruction::Pop { registers } => self.pop(registers),
             Instruction::Push { registers } => self.push(registers),
+            Instruction::RsbImm {rd, rn, imm32, setflags} => self.rsb_imm(rd, rn, imm32, setflags),
             Instruction::SubImm { rd, rn, imm32, setflags } => self.sub_imm(rd, rn, imm32, setflags),
             Instruction::SubReg { rd, rm, rn, shift, setflags } => self.sub_reg(rd, rm, rn, shift, setflags),
             Instruction::Stm { rn, registers, wback } => self.stm(rn, registers, wback),
@@ -361,7 +370,9 @@ impl Board {
             Instruction::Unimplemented => {
                 println!("Working on it");
             }
-            _ => println!("Unhandled instruction"),
+            _ => {
+                println!("Unhandled instruction {:?}", instr);
+            }
         }
     }
 
@@ -417,9 +428,9 @@ impl Board {
     }
 
     fn print_mem_area(&mut self, address: u32) {
-        let padding = "   ".repeat((address & 0xF) as usize);
-        println!("{}v{:#010X}", padding.to_string(), address);
-        self.print_mem_dump(address & !0xF, 0x8);
+        // let padding = "   ".repeat((address & 0xF) as usize);
+        // println!("{}v{:#010X}", padding.to_string(), address);
+        // self.print_mem_dump(address & !0xF, 0x8);
     }
 
     fn read_reg(&self, reg: u8) -> u32 {
@@ -717,18 +728,16 @@ impl Board {
 
         // A7.7.12 (see self.branch)
         if self.cpu.check_condition(cond) {
-            println!("Condition passed");
+            // println!("Condition passed");
             self.branch_write_pc(address);
         } else {
-            println!("Condition failed");
+            // println!("Condition failed");
         }
     }
 
     fn bfc(&mut self, rd: u8, mask: u32) {
         // A7.7.13
-        // NOTE: We precalculate the mask from the msbit and lsbit values.
-        // TODO: Determine if UNPREDICTABLE at execution time is different
-        // to treating the instruction as unpredictable.
+        // NOTE: We precalculate the mask from the msbit and lsbit values
         self.write_reg(rd, self.read_reg(rd) & mask);
     }
 
@@ -767,7 +776,13 @@ impl Board {
         self.set_lr(self.read_pc() | 0b1);
         match self.branch_map.get(&address) {
             Some(name) => {
-                println!("Skipping branch with link to {}", name);
+                if name == "BSP_AUDIO_OUT_Play_Sample" {
+                    // println!("({}) Audio out: {:#010X}", self.tick, self.read_reg(0));
+                    write!(self.log, "{} ", self.read_reg(0) as i16);
+                    self.samples += 1;
+                } else {
+                    // println!("Skipping branch with link to {}", name);
+                }
                 return;
             }
             _ => {}
@@ -1181,6 +1196,14 @@ impl Board {
         self.print_mem_area(orig_address);
     }
 
+    fn rsb_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
+        let (result, carry, overflow) = add_with_carry(!self.read_reg(rn), imm32, 1);
+        self.write_reg(rd, result);
+        if setflags {
+            self.set_flags_nzcv(result, carry, overflow);
+        }
+    }
+
     fn stm(&mut self, rn: u8, registers: u16, wback: bool) {
         // A7.7.159
         let mut address = self.read_reg(rn);
@@ -1302,10 +1325,9 @@ fn main() {
     println!("finished init");
 
     let mut cont = true;
-    let mut i = 0;
     loop {
         if cont {
-            cont = i != 5050;
+            cont = board.samples < 48000 * 30;
             if !cont { println!("\n{}\n", board); }
         }
 
@@ -1318,8 +1340,7 @@ fn main() {
             // cont = true;
         }
 
-        print!("{} - ", i);
-        i += 1;
+        // print!("{} - ", board.tick);
         match board.next_instruction(true) {
             Ok(i) => {
                 if !cont { println!("Ok: {:?}", i); }
