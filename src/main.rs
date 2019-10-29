@@ -151,22 +151,22 @@ impl MemoryBus {
         return Ok(());
     }
 
-    fn print_mem_dump(&self, index: usize, length: usize) {
+    fn print_mem_dump(&self, address: u32, length: usize) {
         let mut c = 16;
-        for i in (index..(index + length * 4)).step_by(4) {
+        for i in address..(address + (length as u32) * 4) {
             if c == 0 {
                 c = 16;
                 print!("\n");
             }
             c -= 1;
-            let val = match self.read_word(i as u32) {
+            let val = match self.read_byte(i) {
                 Ok(v) => v,
                 Err(e) => {
                     println!("{}", e);
                     return;
                 }
             };
-            print!("{:#010X} ", val);
+            print!("{:02X} ", val);
         }
         print!("\n");
     }
@@ -309,7 +309,12 @@ impl Board {
         // from their position when calculating offsets (see page 124).
         let (instr, wide) = Instruction::from(val, pc + 4);
 
-        println!("{:?}", instr);
+        if wide {
+            println!("{:#034b} -> {:?}", val, instr);
+        } else {
+            println!("{:#018b} -> {:?}", val >> 16, instr);
+        }
+
 
         if update_pc {
             self.inc_pc(wide);
@@ -331,17 +336,24 @@ impl Board {
             Instruction::CmpImm { rn, imm32 } => self.cmp_imm(rn, imm32),
             Instruction::CmpReg { rm, rn, shift } => self.cmp_reg(rm, rn, shift),
             Instruction::LdrLit { rt, address } => self.ldr_lit(rt, address),
+            Instruction::Ldm { rn, registers, wback } => self.ldm(rn, registers, wback),
             Instruction::LdrImm { rt, rn, offset, index, wback } => self.ldr_imm(rt, rn, offset, index, wback),
             Instruction::LdrReg { rt, rn, rm, shift } => self.ldr_reg(rt, rn, rm, shift),
             Instruction::MovImm { rd, imm32, setflags, carry } => self.mov_imm(rd, imm32, setflags, carry),
             Instruction::MovReg { rd, rm, setflags } => self.mov_reg(rd, rm, setflags),
+            Instruction::Mul {rd, rn, rm, setflags} => self.mul(rd, rn, rm, setflags),
             Instruction::OrrImm {rd, rn, imm32, setflags, carry} => self.orr_imm(rd, rn, imm32, setflags, carry),
             Instruction::Pop { registers } => self.pop(registers),
             Instruction::Push { registers } => self.push(registers),
             Instruction::SubImm { rd, rn, imm32, setflags } => self.sub_imm(rd, rn, imm32, setflags),
             Instruction::SubReg { rd, rm, rn, shift, setflags } => self.sub_reg(rd, rm, rn, shift, setflags),
-            Instruction::StrImm { rn, rt, offset, index, wback, } => self.str_imm(rt, rn, offset, index, wback),
+            Instruction::Stm { rn, registers, wback } => self.stm(rn, registers, wback),
+            Instruction::StrImm { rn, rt, offset, index, wback } => self.str_imm(rt, rn, offset, index, wback),
             Instruction::StrReg { rt, rn, rm, shift } => self.str_reg(rt, rn, rm, shift),
+            Instruction::Udiv {rd, rn, rm} => self.udiv(rd, rn, rm),
+
+            Instruction::ShiftImm {rd, rm, shift, setflags} => self.shift_imm(rd, rm, shift, setflags),
+
             Instruction::Undefined => {}
             Instruction::Unpredictable => {
                 println!("Spooky");
@@ -400,8 +412,14 @@ impl Board {
         return Ok(());
     }
 
-    fn print_mem_dump(&mut self, index: usize, length: usize) {
+    fn print_mem_dump(&mut self, index: u32, length: usize) {
         self.memory.print_mem_dump(index, length);
+    }
+
+    fn print_mem_area(&mut self, address: u32) {
+        let padding = "   ".repeat((address & 0xF) as usize);
+        println!("{}v{:#010X}", padding.to_string(), address);
+        self.print_mem_dump(address & !0xF, 0x8);
     }
 
     fn read_reg(&self, reg: u8) -> u32 {
@@ -505,6 +523,15 @@ impl Board {
             CarryChange::Same => {},
         };
         // v unchanged
+    }
+
+    fn shift_imm(&mut self, rd: u8, rm: u8, shift: Shift, setflags: bool) {
+        // Handles LSL, LSR, ASR, etc., as their encodings (T2 at least) are all very similar
+        let (result, carry) = self.get_shift_with_carry(rm, shift);
+        self.write_reg(rd, result);
+        if setflags {
+            self.set_flags_nzc(result, carry);
+        }
     }
 
     /**
@@ -690,7 +717,10 @@ impl Board {
 
         // A7.7.12 (see self.branch)
         if self.cpu.check_condition(cond) {
+            println!("Condition passed");
             self.branch_write_pc(address);
+        } else {
+            println!("Condition failed");
         }
     }
 
@@ -734,6 +764,7 @@ impl Board {
 
     fn branch_with_link(&mut self, address: u32) {
         // A7.7.18
+        self.set_lr(self.read_pc() | 0b1);
         match self.branch_map.get(&address) {
             Some(name) => {
                 println!("Skipping branch with link to {}", name);
@@ -741,8 +772,6 @@ impl Board {
             }
             _ => {}
         }
-
-        self.set_lr(self.read_pc() | 0b1);
         self.branch(address);
     }
 
@@ -876,11 +905,12 @@ impl Board {
         // TODO
     }
 
-    fn ldm(&mut self, rn: u8, registers: u32, wback: bool) {
+    fn ldm(&mut self, rn: u8, registers: u16, wback: bool) {
         // A7.7.41
         assert!((registers >> 14) == 0);
 
         let mut address = self.read_reg(rn);
+        self.print_mem_area(address);
         for i in 0..=14u8 {
             if bitset(registers, i.into()) {
                 let val = self.memory.read_word(address).unwrap();
@@ -921,6 +951,7 @@ impl Board {
         // NOTE: On making the Instruction, we use a signed offset instead of a separate add bool
         let offset_address = self.read_reg(rn).wrapping_add(offset as u32);
         let address = if index { offset_address } else { self.read_reg(rn) };
+        self.print_mem_area(address);
         let data = self.memory.read_word(address).unwrap();
         if wback { self.write_reg(rn, offset_address); }
         if rt == 15 {
@@ -955,6 +986,7 @@ impl Board {
         let offset = self.get_shifted_register(rm, shift);
         let offset_address = self.read_reg(rn).wrapping_add(offset);
         let address = offset_address; // NOTE: This is supposed to be conditional on 'index', but 'index' is always true
+        self.print_mem_area(address);
         let data = self.memory.read_word(address).unwrap();
         // if wback { self.write_reg(rn, offset_address); } // NOTE: wback always false
         if rt == 15 {
@@ -1096,6 +1128,17 @@ impl Board {
         }
     }
 
+    fn mul(&mut self, rd: u8, rn: u8, rm: u8, setflags: bool) {
+        // A7.7.84
+        let op1 = self.read_reg(rn) as i32;
+        let op2 = self.read_reg(rm) as i32;
+        let result = op1.wrapping_mul(op2) as u32;
+        self.write_reg(rd, result);
+        if setflags {
+            self.set_flags_nz(result);
+        }
+    }
+
     fn orr_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange) {
         let result = self.read_reg(rn) | imm32;
         self.write_reg(rd, result);
@@ -1106,9 +1149,10 @@ impl Board {
 
     fn pop(&mut self, registers: u16) {
         let mut address = self.read_sp();
+        self.print_mem_area(address);
         self.write_sp(address + 4 * registers.count_ones());
 
-        for i in 0..14u8 {
+        for i in 0..=14u8 {
             if bitset(registers, i.into()) {
                 self.write_reg(i, self.memory.read_mem_a(address, 4).unwrap());
                 address += 4;
@@ -1133,6 +1177,22 @@ impl Board {
         }
 
         self.write_sp(orig_address);
+
+        self.print_mem_area(orig_address);
+    }
+
+    fn stm(&mut self, rn: u8, registers: u16, wback: bool) {
+        // A7.7.159
+        let mut address = self.read_reg(rn);
+        for i in 0..=14u8 {
+            if bitset(registers, i.into()) {
+                self.memory.write_word(address, self.read_reg(i)).unwrap();
+                address += 4;
+            }
+        }
+        self.print_mem_area(address);
+
+        if wback { self.write_reg(rn, address); }
     }
 
     fn str_imm(&mut self, rt: u8, rn: u8, offset: i32, index: bool, wback: bool) {
@@ -1142,6 +1202,7 @@ impl Board {
         let address = if index { offset_address } else { self.read_reg(rn) };
         self.memory.write_word(address, self.read_reg(rt)).unwrap();
         if wback { self.write_reg(rn, offset_address); }
+        self.print_mem_area(address);
     }
 
     fn str_reg(&mut self, rt: u8, rn: u8, rm: u8, shift: Shift) {
@@ -1149,7 +1210,7 @@ impl Board {
         let offset = self.get_shifted_register(rm, shift);
         let address = self.read_reg(rn).wrapping_add(offset);
         self.memory.write_word(address, self.read_reg(rt)).unwrap();
-        self.memory.print_raw_mem_dump(0x2000_0000, 100);
+        self.print_mem_area(address);
     }
 
     fn sub_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
@@ -1169,6 +1230,20 @@ impl Board {
         if setflags {
             self.set_flags_nzcv(result, carry, overflow);
         }
+    }
+
+    fn udiv(&mut self, rd: u8, rn: u8, rm: u8) {
+        let m = self.read_reg(rm);
+        let result = if m == 0 {
+            if /*IntegerZeroDivideTrappingEnabled*/ true {
+                panic!("GenerateIntegerZeroDivide");
+            } else {
+                0
+            }
+        } else {
+            self.read_reg(rn) / m
+        };
+        self.write_reg(rd, result);
     }
 }
 
@@ -1227,9 +1302,10 @@ fn main() {
     println!("finished init");
 
     let mut cont = true;
+    let mut i = 0;
     loop {
         if cont {
-            cont = board.read_pc() != 0x080196a2;
+            cont = i != 5050;
             if !cont { println!("\n{}\n", board); }
         }
 
@@ -1239,8 +1315,11 @@ fn main() {
             let mut input = String::new();
             io::stdin().read_line(&mut input).unwrap();
             print!("\n\n");
+            // cont = true;
         }
 
+        print!("{} - ", i);
+        i += 1;
         match board.next_instruction(true) {
             Ok(i) => {
                 if !cont { println!("Ok: {:?}", i); }

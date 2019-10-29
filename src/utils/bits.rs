@@ -15,6 +15,20 @@ pub fn matches<T: Into<u32>>(word: T, shift: T, mask: T, expected: T) -> bool {
     return ((word >> shift) & mask) == expected;
 }
 
+pub fn decode_imm_shift<T: Into<u32>>(encoded: T) -> Shift {
+    // A7.4.2
+    let encoded = encoded.into();
+    let shift_n = (encoded & 0x1F) as u32;
+    return match encoded >> 5 {
+        0b00 => Shift {shift_t: ShiftType::LSL, shift_n},
+        0b01 => Shift {shift_t: ShiftType::LSR, shift_n},
+        0b10 => Shift {shift_t: ShiftType::ASR, shift_n},
+        0b11 if shift_n == 0 => Shift {shift_t: ShiftType::RRX, shift_n: 1},
+        0b11 if shift_n != 0 => Shift {shift_t: ShiftType::ROR, shift_n},
+        _ => panic!(),
+    }
+}
+
 pub fn align(address: u32, size: u32) -> u32 {
     assert!(size == 1 || size == 2 || size == 4);
     return address & !(size - 1);
@@ -159,17 +173,4 @@ pub fn add_with_carry(x: u32, y: u32, carry_in: u32) -> (u32, bool, bool) {
     let overflow = (x_neg == y_neg) && (x_neg != result_neg);
 
     return (result as u32, carry_out, overflow);
-}
-
-pub fn decode_imm_shift(encoded: u16) -> Shift {
-    // A7.4.2
-    let shift_n = (encoded & 0x1F) as u32;
-    return match encoded >> 5 {
-        0b00 => Shift {shift_t: ShiftType::LSL, shift_n},
-        0b01 => Shift {shift_t: ShiftType::LSR, shift_n},
-        0b10 => Shift {shift_t: ShiftType::ASR, shift_n},
-        0b11 if shift_n == 0 => Shift {shift_t: ShiftType::RRX, shift_n: 1},
-        0b11 if shift_n != 0 => Shift {shift_t: ShiftType::ROR, shift_n},
-        _ => panic!(),
-    }
 }

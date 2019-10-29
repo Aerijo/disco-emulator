@@ -1,5 +1,5 @@
 use crate::instruction::{Instruction, ShiftType, Condition, CarryChange};
-use crate::utils::bits::{bitset, thumb_expand_imm_c, thumb_expand_imm, matches, word_align, sign_extend};
+use crate::utils::bits::{bitset, thumb_expand_imm_c, thumb_expand_imm, matches, word_align, sign_extend, decode_imm_shift};
 use crate::Shift;
 
 pub fn get_wide_instruction(word: u32, pc: u32) -> Instruction {
@@ -11,7 +11,7 @@ pub fn get_wide_instruction(word: u32, pc: u32) -> Instruction {
             if bitset(op2, 6) {
                 id_coprocessor_instr(word)
             } else if bitset(op2, 5) {
-                id_data_processing_shifted(word)
+                id_data_processing_shifted_register(word)
             } else if bitset(op2, 2) {
                 id_ldr_str_dual(word, pc)
             } else {
@@ -33,7 +33,7 @@ pub fn get_wide_instruction(word: u32, pc: u32) -> Instruction {
             } else if bitset(op2, 5) {
                 if bitset(op2, 4) {
                     if bitset(op2, 3) {
-                        id_long_multiply_diff(word)
+                        id_long_multiply_div(word)
                     } else {
                         id_multiply_diff(word)
                     }
@@ -281,56 +281,178 @@ fn id_ldr_str_dual(word: u32, pc: u32) -> Instruction {
     }
 }
 
-fn id_data_processing_shifted(word: u32) -> Instruction {
+fn id_data_processing_shifted_register(word: u32) -> Instruction {
     // A5.3.11
     assert!(matches(word, 25, 0b111_1111, 0b111_0101));
-    let op = (word >> 21) & 0b1111;
-    let s = bitset(word, 20);
-    let rn_is_pc = ((word >> 16) & 0b1111) == 0b1111;
-    let rd = ((word >> 8) & 0b1111) as u8;
-    let rd_is_pc = rd == 0b1111;
-    return match op {
+    let rn = ((word >> 16) & 0xF) as u8;
+    let rd = ((word >> 8) & 0xF) as u8;
+    let rm = (word & 0xF) as u8;
+    let rn_is_pc = rn == 15;
+    let rd_is_pc = rd == 15;
+    let setflags = bitset(word, 20);
+
+    let shift = decode_imm_shift(((word << 1) & (0b11 << 5)) + ((word >> 6) & 0b11) + ((word >> 10) & (0b111 << 2)));
+
+    if bitset(word, 15) {
+        return Instruction::Unpredictable;
+    }
+
+    return match (word >> 21) & 0xF {
         0b0000 => {
-            if rd_is_pc {
-                if s {
-                    Instruction::Unpredictable
-                } else {
-                    Instruction::Unimplemented // TST (reg)
-                }
+            if rd == 13 || (rd == 15 && !setflags) || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
+            } else if rd_is_pc {
+                Instruction::TstReg {rn, rm, shift} // A7.7.189 T2
             } else {
-                Instruction::Unimplemented // ADD (reg)
+                Instruction::AndReg {rn, rd, rm, shift, setflags} // A7.7.9 T2
             }
         }
-        0b0001 => Instruction::Unimplemented, // BIC (reg)
+        0b0001 => {
+            if rd == 13 || rd == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::BicReg {rd, rn, rm, shift, setflags} // A7.7.16 T2
+            }
+        }
         0b0010 => {
             if rn_is_pc {
-                let det = (word >> 4) & 0b11;
-                let imm5 = ((word >> 10) & 0b11100) + ((word >> 6) & 0b11);
-                return match det {
-                    0b00 => {
-                        if imm5 == 0 {
-                            let rm = (word & 0b1111) as u8;
-                            Instruction::MovReg {
-                                rd,
-                                rm,
-                                setflags: s,
-                            }
-                        } else {
-                            Instruction::Unimplemented // LSL (imm)
-                        }
+                if shift.shift_t == ShiftType::LSL && shift.shift_n == 0 {
+                    if rd == 15 || rm == 15 || (rd == 13 && rm == 13) || (setflags && (rd == 13 || rm == 13)) {
+                        Instruction::Unpredictable
+                    } else {
+                        Instruction::MovReg {rd, rm, setflags} // A7.7.77 T3
                     }
-                    _ => Instruction::Unimplemented,
-                };
+                } else if rd == 13 || rd == 15 || rm == 13 || rm == 15 {
+                    Instruction::Unpredictable
+                } else {
+                    Instruction::ShiftImm {rd, rm, shift, setflags} // LslImm, LsrImm, AsrImm, Rrx, RorImm
+                }
+            } else if rd == 13 || rd == 15 || rn == 13 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
             } else {
-                Instruction::Unimplemented // ORR (reg)
+                Instruction::OrrReg {rd, rn, rm, shift, setflags} // A7.7.92 T2
             }
         }
-        _ => Instruction::Unimplemented,
+        0b0011 => {
+            if rd == 13 || rd == 15 || rm == 13 || rm == 15 || rn == 13 {
+                Instruction::Unpredictable
+            } else if rn_is_pc {
+                Instruction::MvnReg {rd, rm, shift, setflags} // A7.7.86 T2
+            } else {
+                Instruction::OrnReg {rd, rn, rm, shift, setflags} // A7.7.90 T2
+            }
+        }
+        0b0100 => {
+            if rd == 13 || (rd == 15 && !setflags) || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
+            } else if rd_is_pc {
+                Instruction::TeqReg {rn, rm, shift} // A7.7.187 T1
+            } else {
+                Instruction::EorReg {rd, rn, rm, shift, setflags} // A7.7.36 T2
+            }
+        }
+        0b0110 => {
+            if rd == 13 || rd == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
+            } else if setflags || bitset(word, 4) {
+                Instruction::Undefined
+            } else if bitset(word, 5) {
+                Instruction::Pkhbt {rd, rn, rm, shift} // A7.7.93 T1
+            } else {
+                Instruction::Pkhtb {rd, rn, rm, shift} // A7.7.93 T1
+            }
+        }
+        0b1000 => {
+            if rd == 13 || (rd == 15 && !setflags) || rn == 15 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
+            } else if rd_is_pc {
+                Instruction::CmnReg {rn, rm, shift} // A7.7.26 T2
+            } else {
+                Instruction::AddReg {rd, rn, rm, shift, setflags} // A7.7.4 T3
+            }
+        }
+        0b1010 => {
+            if rd == 13 || rd == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::AdcReg {rd, rn, rm, shift, setflags} // A7.7.2 T2
+            }
+        }
+        0b1011 => {
+            if rd == 13 || rd == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::SbcReg {rd, rn, rm, shift, setflags} // A7.7.125 T2
+            }
+        }
+        0b1101 => {
+            if rd == 13 || (rd == 15 && !setflags) || rn == 15 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
+            } else if rd_is_pc {
+                Instruction::CmpReg {rn, rm, shift} // A7.7.28 T3
+            } else {
+                Instruction::SubReg {rn, rd, rm, shift, setflags} // A7.7.175 T2
+            }
+        }
+        0b1110 => {
+            if rd == 13 || rd == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::RsbReg {rd, rn, rm, shift, setflags} // A7.7.120 T1
+            }
+        }
+        _ => Instruction::Undefined,
     };
 }
 
+fn id_long_multiply_div(word: u32) -> Instruction {
+    // A5.3.17
+    assert!(matches(word, 23, 0b111_1111_11, 0b111_1101_11));
+    let rn = ((word >> 16) & 0xF) as u8;
+    let rm = (word & 0xF) as u8;
+    let op1 = (word >> 20) & 0b111;
+    let op2 = (word >> 4) & 0xF;
+
+    let rd_lo = ((word >> 12) & 0xF) as u8;
+    let rd_hi = ((word >> 8) & 0xF) as u8;
+    let rd = rd_hi;
+
+    return match (op1, op2) {
+        (0b000, 0b0000) => {
+            if rd_lo == 13 || rd_lo == 15 || rd_hi == 13 || rd_hi == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 || rd_hi == rd_lo {
+                Instruction::Unpredictable
+            } else {
+                Instruction::Smull {rd_lo, rd_hi, rn, rm} // A7.7.149 T1
+            }
+        }
+        (0b001, 0b1111) => {
+            if rd_lo != 15 || rd == 13 || rd == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::Sdiv {rd, rn, rm} // A7.7.127 T1
+            }
+        }
+        (0b010, 0b0000) => {
+            if rd_lo == 13 || rd_lo == 15 || rd_hi == 13 || rd_hi == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 || rd_hi == rd_lo {
+                Instruction::Unpredictable
+            } else {
+                Instruction::Umull {rd_lo, rd_hi, rn, rm} // A7.7.204 T1
+            }
+        }
+        (0b011, 0b1111) => {
+            if rd_lo != 15 || rd == 13 || rd == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                Instruction::Unpredictable
+            } else {
+                Instruction::Udiv {rd, rn, rm} // A7.7.195 T1
+            }
+        }
+        _ => Instruction::Unimplemented
+    }
+}
+
 fn id_coprocessor_instr(word: u32) -> Instruction {
-    assert!((word & (0b111011 << 26)) == 0b111011 << 26);
+    // A5.3.18
+    assert!(matches(word, 26, 0b111_0_11, 0b111_0_11));
     return Instruction::Unimplemented;
 }
 
@@ -392,13 +514,35 @@ fn id_data_proc_plain_binary_immediate(word: u32) -> Instruction {
     };
 }
 
-fn id_long_multiply_diff(word: u32) -> Instruction {
-    assert!((word & (0b1111_1111_1 << 23)) == 0b1111_1011_1 << 23);
-    return Instruction::Unimplemented;
-}
-
 fn id_multiply_diff(word: u32) -> Instruction {
-    return Instruction::Unimplemented;
+    // A5.3.16
+    assert!(matches(word, 6, 0b111_1111_11_000_0000_0000_0000_11, 0b111_1101_10_000_0000_0000_0000_00));
+    let op1 = (word >> 20) & 0b111;
+    let op2 = (word >> 4) & 0b11;
+    let ra = ((word >> 12) & 0xF) as u8;
+
+    let rn = ((word >> 16) & 0xF) as u8;
+    let rd = ((word >> 8) & 0xF) as u8;
+    let rm = (word & 0xF) as u8;
+
+    return match op1 {
+        0b000 => {
+            if op2 == 0b01 {
+                Instruction::Unimplemented
+            } else if op2 != 0b00 {
+                Instruction::Undefined
+            } else if ra == 15 {
+                if rd == 13 || rd == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                    Instruction::Unpredictable
+                } else {
+                    Instruction::Mul {rd, rn, rm, setflags: false} // A7.7.84 T2
+                }
+            } else {
+                Instruction::Unimplemented
+            }
+        }
+        _ => Instruction::Unimplemented
+    };
 }
 
 fn id_data_proc_register(word: u32) -> Instruction {

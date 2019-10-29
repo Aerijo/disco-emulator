@@ -42,7 +42,7 @@ pub fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
             if registers == 0 {
                 Instruction::Unpredictable
             } else {
-                Instruction::Stm {rn, registers, wback: !bitset(registers, rn.into())} // A7.7.41 T1
+                Instruction::Ldm {rn, registers, wback: !bitset(registers, rn.into())} // A7.7.41 T1
             }
         }
         0b11_0100..=0b11_0111 => id_conditional_branch_supc(hword, pc),
