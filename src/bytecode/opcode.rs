@@ -10,7 +10,7 @@ pub enum Opcode {
     Adr = 0x07,
     AndImm = 0x08,
     AndReg = 0x09,
-    LdrLit = 0x0A, // N: blank[5]-rt[3]-offset[8]
+    LdrLit = 0x0A, // N: blank[3]-rt[3]-offset[10]
     Other = 0xFF,
     // etc.
 }

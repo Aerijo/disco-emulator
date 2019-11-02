@@ -15,18 +15,13 @@ fn id_narrow_thumb(hword: u32, c: Context) -> u32 {
         0b01_0000             => id_data_processing(hword),
         0b01_0001             => id_special_data_branch(hword),
         0b01_0010..=0b01_0011 => {
-            let rt = (hword << 2) & (0b111 << 10);
-            let offset = (hword & 0xFF) << 2;
-            return Tag::get_narrow(Opcode::LdrLit, c) + rt + offset; // A7.7.44 T1
+            return Tag::get_narrow(Opcode::LdrLit, c) + ((hword & 0x7FF) << 2); // A7.7.44 T1
         }
         0b01_0100..=0b01_0111 |
         0b01_1000..=0b01_1111 |
         0b10_0000..=0b10_0111 => id_ldr_str_single(hword),
         0b10_1000..=0b10_1001 => {
-            let rd = ((hword >> 8) & 0b111) as u8;
-            let imm32 = ((hword & 0xFF) << 2) as u32;
-            let address = word_align(pc) + imm32;
-            Instruction::Adr {rd, address} // A7.7.7 T1
+            return Tag::get_narrow(Opcode::Adr, c) + (hword & 0x7FF); // A7.7.7 T1
         }
         0b10_1010..=0b10_1011 => {
             let imm32 = ((hword & 0xFF) << 2) as u32;

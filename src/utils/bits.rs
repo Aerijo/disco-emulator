@@ -1,14 +1,12 @@
 use crate::Shift;
 use crate::instruction::{ShiftType, CarryChange};
 
-#[inline(always)]
 pub fn bitset<T: Into<u32>>(word: T, bit: T) -> bool {
     let word = word.into();
     let bit = bit.into();
     return (word & (1 << bit)) > 0;
 }
 
-#[inline(always)]
 pub fn matches<T: Into<u32>>(word: T, shift: T, mask: T, expected: T) -> bool {
     let word = word.into();
     let shift = shift.into();
@@ -31,13 +29,11 @@ pub fn decode_imm_shift<T: Into<u32>>(encoded: T) -> Shift {
     }
 }
 
-#[inline(always)]
 pub fn align(address: u32, size: u32) -> u32 {
     assert!(size == 1 || size == 2 || size == 4);
     return address & !(size - 1);
 }
 
-#[inline(always)]
 pub fn word_align(address: u32) -> u32 {
     return align(address, 4);
 }
@@ -53,7 +49,7 @@ pub fn sign_extend(num: u32, bits: u32) -> i32 {
  * an encoding such as foo[8]-offset[8]
  */
 pub fn shifted_sign_extend(value: u32, bits: u32, shift: u32) -> u32 {
-    assert!(bits < 32);
+    assert!(bits < 32 && shift < 32);
     return (((value << (31 - bits)) as i32) >> (31 - bits - shift)) as u32;
 }
 
