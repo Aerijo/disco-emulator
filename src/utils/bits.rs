@@ -38,12 +38,9 @@ pub fn word_align(address: u32) -> u32 {
     return align(address, 4);
 }
 
-pub fn sign_extend(value: u32, from: u32) -> i32 {
-    return if bitset(value, from) {
-        (value | (!0 << from)) as i32
-    } else {
-        value as i32
-    };
+pub fn sign_extend(value: u32, bits: u32) -> i32 {
+    assert!(bits < 32);
+    return ((value << (31 - bits)) as i32) >> (31 - bits);
 }
 
 // The pseudocode definition takes the current carry flag state

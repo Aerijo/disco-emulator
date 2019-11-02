@@ -309,6 +309,8 @@ impl Board {
 
     fn next_instruction(&mut self, update_pc: bool) -> Result<Instruction, String> {
         let pc = self.read_pc();
+        // println!("-> {}", pc);
+
         let val = self.memory.get_instr_word(pc)?;
 
         // Most instructions that use the PC assume it is +4 bytes
@@ -1327,7 +1329,7 @@ fn main() {
     let mut cont = true;
     loop {
         if cont {
-            cont = board.samples < 48000 * 30;
+            cont = board.read_reg(0) < 0x2FAF0000;
             if !cont { println!("\n{}\n", board); }
         }
 
