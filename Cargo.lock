@@ -9,7 +9,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "arm-simulator"
+name = "arm-emulator"
 version = "0.1.0"
 dependencies = [
  "goblin 0.0.22 (registry+https://github.com/rust-lang/crates.io-index)",

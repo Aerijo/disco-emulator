@@ -27,6 +27,7 @@ pub enum Condition {
     SHigher = 0b1100,
     SLowerSame = 0b1101,
     Always = 0b1110,
+    Never = 0b1111,
 }
 
 impl Condition {
@@ -195,4 +196,8 @@ impl Instruction {
             (get_narrow_instruction((word >> 16) as u16, pc), false)
         };
     }
+}
+
+pub fn is_wide_instruction(value: u32) -> bool {
+    return (word >> 29 == 0b111) && (word >> 27 != 0b11100);
 }

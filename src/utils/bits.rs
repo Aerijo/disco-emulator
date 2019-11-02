@@ -1,12 +1,14 @@
 use crate::Shift;
 use crate::instruction::{ShiftType, CarryChange};
 
+#[inline(always)]
 pub fn bitset<T: Into<u32>>(word: T, bit: T) -> bool {
     let word = word.into();
     let bit = bit.into();
     return (word & (1 << bit)) > 0;
 }
 
+#[inline(always)]
 pub fn matches<T: Into<u32>>(word: T, shift: T, mask: T, expected: T) -> bool {
     let word = word.into();
     let shift = shift.into();
@@ -29,21 +31,30 @@ pub fn decode_imm_shift<T: Into<u32>>(encoded: T) -> Shift {
     }
 }
 
+#[inline(always)]
 pub fn align(address: u32, size: u32) -> u32 {
     assert!(size == 1 || size == 2 || size == 4);
     return address & !(size - 1);
 }
 
+#[inline(always)]
 pub fn word_align(address: u32) -> u32 {
     return align(address, 4);
 }
 
-pub fn sign_extend(value: u32, from: u32) -> i32 {
-    return if bitset(value, from) {
-        (value | (!0 << from)) as i32
-    } else {
-        value as i32
-    };
+pub fn sign_extend(num: u32, bits: u32) -> i32 {
+    return shifted_sign_extend(num, bits, 0) as i32;
+}
+
+/**
+ * Sign extends the number value[0:bits], and shifts it left by shift.
+ * Guarantees that only the _bits_ lowest bits are maintained, and higher
+ * bits are cleared (pre shift). Therefore, it is safe to use directly in
+ * an encoding such as foo[8]-offset[8]
+ */
+pub fn shifted_sign_extend(value: u32, bits: u32, shift: u32) -> u32 {
+    assert!(bits < 32);
+    return (((value << (31 - bits)) as i32) >> (31 - bits - shift)) as u32;
 }
 
 // The pseudocode definition takes the current carry flag state
