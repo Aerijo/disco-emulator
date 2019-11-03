@@ -1,6 +1,8 @@
 use crate::{ByteInstruction};
-use crate::bytecode::{Opcode};
-use tag;
+use crate::utils::bits::{bitset, matches};
+use super::{ItPos, InstructionContext};
+use super::opcode::{Opcode};
+use super::tag;
 
 type Context = InstructionContext;
 
@@ -47,7 +49,7 @@ pub fn decode_thumb_narrow(hword: u16, c: Context) -> u32 {
     };
 }
 
-fn id_shift_add_sub_move_cmp(hword: u16, c: Context) -> ByteInstruction {
+fn id_shift_add_sub_move_cmp(hword: u16, c: Context) -> u32 {
     // A5.2.1
     assert!(matches(hword, 14, 0b11, 0b00));
     return match hword >> 9 {
@@ -83,7 +85,7 @@ fn id_shift_add_sub_move_cmp(hword: u16, c: Context) -> ByteInstruction {
     }
 }
 
-fn id_data_processing(hword: u16, c: Context) -> ByteInstruction {
+fn id_data_processing(hword: u16, c: Context) -> u32 {
     // A5.2.2
     assert!(matches(hword, 10, 0b1111_11, 0b0100_00));
     let opcode = match (hword >> 6) & 0xF {
@@ -106,7 +108,7 @@ fn id_data_processing(hword: u16, c: Context) -> ByteInstruction {
         0b1110 => Opcode::BicReg, // A7.7.16 T1
         0b1111 => Opcode::MvnReg, // A7.7.86 T1
         _ => unreachable!(),
-    }
+    };
     return tag::get_narrow(opcode, c, hword & 0x3F);
 }
 
@@ -117,7 +119,7 @@ fn id_special_data_branch(hword: u16, c: Context) -> u32 {
     let rm = (hword & (0xF << 3)) >> 3;
     return match (hword >> 6) & 0xF {
         0b0000..=0b0011 => {
-            let mut instr = tag::get_narrow(Opcode::AddReg, c, rd | (rm << 4) | (rd << 8)), // A7.7.4 T2
+            let mut instr = tag::get_narrow(Opcode::AddReg, c, rd | (rm << 4) | (rd << 8)); // A7.7.4 T2
             if rd == 15 {
                 if rm == (15 << 4) {
                     instr = tag::as_unpred(instr);
@@ -144,7 +146,7 @@ fn id_special_data_branch(hword: u16, c: Context) -> u32 {
             }
         }
         0b1100..=0b1101 => {
-            let mut instr = tag::get_narrow(Opcode::Bx, c, rm), // A7.7.20 T1
+            let mut instr = tag::get_narrow(Opcode::Bx, c, rm); // A7.7.20 T1
             if hword & 0b111 != 0 {
                 instr = tag::as_unpred(instr);
             }
@@ -154,7 +156,7 @@ fn id_special_data_branch(hword: u16, c: Context) -> u32 {
             return instr;
         }
         0b1110..=0b1111 => {
-            let mut instr = tag::get_narrow(Opcode::Blx, c, rm), // A7.7.19 T1
+            let mut instr = tag::get_narrow(Opcode::Blx, c, rm); // A7.7.19 T1
             if hword & 0b111 != 0 {
                 instr = tag::as_unpred(instr);
             }
@@ -187,7 +189,7 @@ fn id_ldr_str_single(hword: u16, c: Context) -> u32 {
                 0b110 => Opcode::LdrbReg, // A7.7.48 T1
                 0b111 => Opcode::LdrshReg, // A7.7.48 T1
                 _ => unreachable!(),
-            }
+            };
             return tag::get_narrow(opcode, c, hword & 0x1FF);
         },
         0b0110 => {
@@ -206,20 +208,19 @@ fn id_ldr_str_single(hword: u16, c: Context) -> u32 {
             }
         }
         0b1000 => {
-            let offset = ((hword >> 5) & (0b1_1111 << 1)) as i32;
+            let instr = (rt << 6) | (rn << 9) | ((hword >> 6) & (0x1F));
             if op_c {
-                Instruction::LdrhImm {rt, rn, offset, index: true, wback: true} // A7.7.55 T1
+                tag::get_narrow(Opcode::LdrhImm, c, instr) // A7.7.55 T1
             } else {
-                Instruction::StrhImm {rt, rn, offset, index: true, wback: true} // A7.7.170 T1
+                tag::get_narrow(Opcode::StrhImm, c, instr) // A7.7.170 T1
             }
         }
         0b1001 => {
-            let rt = ((hword >> 8) & 0b111) as u8;
-            let offset = ((hword & 0xFF) << 2) as i32;
+            let instr = (hword & 0x7FF) | (13 << 12);
             if op_c {
-                Instruction::LdrImm {rt, rn: 13, offset, index: true, wback: true} // A7.7.43 T2
+                tag::get_narrow(Opcode::LdrImm, c, instr) // A7.7.43 T2
             } else {
-                Instruction::StrImm {rt, rn: 13, offset, index: true, wback: true} // A7.7.161 T2
+                tag::get_narrow(Opcode::StrImm, c, instr) // A7.7.161 T2
             }
         }
         _ => unreachable!(),

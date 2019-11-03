@@ -182,5 +182,9 @@ pub fn add_with_carry(x: u32, y: u32, carry_in: u32) -> (u32, bool, bool) {
 }
 
 pub fn extract_value(raw: u32, start: u32, size: u32) -> u32 {
-    return ((raw >> start) & (!0 >> (32 - size)));
+    return (raw >> start) & (!0 >> (32 - size));
+}
+
+pub fn is_wide_thumb(word: u32) -> bool {
+    return ((word >> 29) == 0b111) && ((word >> 27) != 0b11100);
 }

@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
+#![allow(unused_variables)]
 
 #[macro_use]
 extern crate lazy_static;
@@ -7,13 +8,13 @@ extern crate goblin;
 extern crate regex;
 
 mod instruction;
-use instruction::{CarryChange, Condition, Instruction, ShiftType, is_wide_instruction};
+use instruction::{CarryChange, Condition, Instruction, ShiftType};
 
 mod peripherals;
 use peripherals::Peripherals;
 
 mod bytecode;
-use bytecode::{InstructionCache, ItPos, InstructionContext, decode_thumb};
+use bytecode::{InstructionCache, ItPos, InstructionContext, decode_thumb, tag, opcode::{Opcode}};
 
 mod cpu;
 use cpu::{CPU, ExecMode};
@@ -318,28 +319,24 @@ impl Board {
      * 4. Updates instruction pointed to by instruction PC to next instruction
      * 5. Returns fetched intermediate bytecode instruction
      */
-    fn fetch(&mut self) -> Result<ByteInstruction, String> {
+    fn fetch(&mut self) -> Result<(ByteInstruction, bool), String> {
         let pc = self.cpu.update_instruction_address();
         let mut instruction = self.instruction_cache.get_cached(pc)?;
-        let mut tag = BytecodeTag::from(instruction);
-        if !tag.has_cached() {
+        let mut start = tag::from(instruction);
+        if !tag::has_cached(start) {
             let raw = self.memory.get_instr_word(pc)?;
-            instruction = decode_thumb(raw, InstructionContext {pc, it_pos: ItPos::None});
-            tag = BytecodeTag::from(instruction);
-            if tag.is_wide() {
+            let decoded = decode_thumb(raw, InstructionContext::new(pc, ItPos::None));
+            instruction = decoded.0;
+            start = tag::from(instruction);
+            if decoded.1 {
                 self.instruction_cache.write_cache_wide(pc, instruction);
             } else {
                 self.instruction_cache.write_cache_narrow(pc, instruction);
             }
         }
-
-        if tag.is_wide() {
-            self.cpu.inc_pc(4);
-        } else {
-            self.cpu.inc_pc(2);
-        }
-
-        return instruction;
+        let wide = tag::is_wide(start);
+        self.cpu.inc_pc(wide);
+        return Ok((instruction, wide));
     }
 
     /**
@@ -349,72 +346,31 @@ impl Board {
      * if unpredictable behaviour is enabled.
      */
     fn decode(&self, instruction: ByteInstruction) -> Opcode {
-        return Instruction::from(val, self.read_pc());
+        return tag::get_opcode(tag::from(instruction));
     }
 
     /**
      * Execute: Takes the instruction and opcode, and executes
      * the instruction based on the opcode. It assumes
      */
-    fn execute(&mut self, instr: Instruction, wide: bool) {
+    fn execute(&mut self, instr: ByteInstruction, wide: bool) -> Result<(), String> {
         self.tick += 1;
-        self.update_pc = true;
-        let result = match instr {
-            Instruction::AddImm {rd, rn, imm32, setflags} => self.add_imm(rd, rn, imm32, setflags),
-            Instruction::AddReg { rd, rm, rn, shift, setflags } => self.add_reg(rd, rm, rn, shift, setflags),
-            Instruction::AddSpImm { rd, imm32, setflags } => self.add_sp_imm(rd, imm32, setflags),
-            Instruction::AndImm {rd, rn, imm32, setflags, carry} => self.and_imm(rd, rn, imm32, setflags, carry),
-            Instruction::Branch { address } => self.branch(address),
-            Instruction::CondBranch { address, cond } => self.branch_cond(address, cond),
-            Instruction::LinkedBranch { address } => self.branch_with_link(address),
-            Instruction::BranchExchange { rm } => self.branch_exchange(rm),
-            Instruction::CmpImm { rn, imm32 } => self.cmp_imm(rn, imm32),
-            Instruction::CmpReg { rm, rn, shift } => self.cmp_reg(rm, rn, shift),
-            Instruction::Cps {enable, affect_pri, affect_fault} => self.cps(enable, affect_pri, affect_fault),
-            Instruction::LdrLit { rt, address } => self.ldr_lit(rt, address),
-            Instruction::Ldm { rn, registers, wback } => self.ldm(rn, registers, wback),
-            Instruction::LdrImm { rt, rn, offset, index, wback } => self.ldr_imm(rt, rn, offset, index, wback),
-            Instruction::LdrReg { rt, rn, rm, shift } => self.ldr_reg(rt, rn, rm, shift),
-            Instruction::MovImm { rd, imm32, setflags, carry } => self.mov_imm(rd, imm32, setflags, carry),
-            Instruction::MovReg { rd, rm, setflags } => self.mov_reg(rd, rm, setflags),
-            Instruction::Mul {rd, rn, rm, setflags} => self.mul(rd, rn, rm, setflags),
-            Instruction::OrrImm {rd, rn, imm32, setflags, carry} => self.orr_imm(rd, rn, imm32, setflags, carry),
-            Instruction::Pop { registers } => self.pop(registers),
-            Instruction::Push { registers } => self.push(registers),
-            Instruction::RsbImm {rd, rn, imm32, setflags} => self.rsb_imm(rd, rn, imm32, setflags),
-            Instruction::SubImm { rd, rn, imm32, setflags } => self.sub_imm(rd, rn, imm32, setflags),
-            Instruction::SubReg { rd, rm, rn, shift, setflags } => self.sub_reg(rd, rm, rn, shift, setflags),
-            Instruction::Stm { rn, registers, wback } => self.stm(rn, registers, wback),
-            Instruction::StrImm { rn, rt, offset, index, wback } => self.str_imm(rt, rn, offset, index, wback),
-            Instruction::StrReg { rt, rn, rm, shift } => self.str_reg(rt, rn, rm, shift),
-            Instruction::Udiv {rd, rn, rm} => self.udiv(rd, rn, rm),
-
-            Instruction::ShiftImm {rd, rm, shift, setflags} => self.shift_imm(rd, rm, shift, setflags),
-
-            Instruction::Undefined => {
-                Err("Undefined instruction")
-            }
-            Instruction::Unpredictable => {
-                Err("Spooky")
-            }
-            Instruction::Unimplemented => {
-                Err("Working on it")
-            }
-            _ => {
-                Err(format!("Unhandled instruction {:?}", instr))
-            }
-        };
-
-        match result {
-            Ok() => {
-                if self.update_pc {
-                    self.inc_pc(wide);
-                }
-            },
-            Err(reason) => {
-                println!(reason);
-            }
+        let opcode = tag::get_opcode(instr.0);
+        let data = (instr.0 & 0xFFFF) as u16;
+        let extra = instr.1;
+        return if wide {
+            self.execute_wide(opcode, data, extra)
+        } else {
+            self.execute_narrow(opcode, data)
         }
+    }
+
+    fn execute_wide(&mut self, opcode: Opcode, data: u16, extra: u32) -> Result<(), String> {
+        return Ok(());
+    }
+
+    fn execute_narrow(&mut self, opcode: Opcode, data: u16) -> Result<(), String> {
+        return Ok(());
     }
 
     /**
@@ -643,17 +599,16 @@ impl Board {
      * Instruction handlers
      */
 
-    fn adc_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) -> Result<bool, String> {
+    fn adc_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
         // A7.7.1
         let (result, carry, overflow) = self.get_add_with_carry(rn, imm32);
         self.write_reg(rd, result);
         if setflags {
             self.set_flags_nzcv(result, carry, overflow);
         }
-        return Ok(true);
     }
 
-    fn adc_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) -> Result<bool, String> {
+    fn adc_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
         // A7.7.2
         let shifted = self.get_shifted_register(rm, shift);
         let (result, carry, overflow) = self.get_add_with_carry(rn, shifted);
@@ -661,32 +616,28 @@ impl Board {
         if setflags {
             self.set_flags_nzcv(result, carry, overflow);
         }
-        return Ok(true);
     }
 
-    fn add_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) -> Result<bool, String> {
+    fn add_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
         // A7.7.3
         let (result, carry, overflow) = self.get_add_with_no_carry(rn, imm32);
         self.write_reg(rd, result);
         if setflags {
             self.set_flags_nzcv(result, carry, overflow);
         }
-        return Ok(true);
     }
 
-    fn add_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) -> Result<bool, String> {
+    fn add_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
         // A7.7.4
         let shifted = self.get_shifted_register(rm, shift);
         let (result, carry, overflow) = self.get_add_with_no_carry(rn, shifted);
         if rd == 15 {
             self.alu_write_pc(result);
-            return Ok(false);
         } else {
             self.write_reg(rd, result);
             if setflags {
                 self.set_flags_nzcv(result, carry, overflow);
             }
-            return Ok(true);
         }
     }
 
@@ -1385,7 +1336,9 @@ fn main() {
         match board.fetch() {
             Ok((i, w)) => {
                 if !cont { println!("Ok: {:?}", i); }
-                board.execute(i, w);
+                match board.execute(i, w) {
+                    _ => {}
+                }
                 if !cont { println!("\n{}\n", board); }
             }
             Err(e) => {

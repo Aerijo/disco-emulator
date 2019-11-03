@@ -2,7 +2,7 @@
 #![allow(unused_variables)]
 
 use crate::Shift;
-use crate::utils::bits::{bitset};
+use crate::utils::bits::{bitset, is_wide_thumb};
 
 mod narrow;
 use narrow::{get_narrow_instruction};
@@ -190,14 +190,10 @@ pub enum Instruction {
 
 impl Instruction {
     pub fn from(word: u32, pc: u32) -> (Instruction, bool) {
-        return if (word >> 29 == 0b111) && (word >> 27 != 0b11100) {
+        return if is_wide_thumb(word) {
             (get_wide_instruction(word, pc), true)
         } else {
             (get_narrow_instruction((word >> 16) as u16, pc), false)
         };
     }
-}
-
-pub fn is_wide_instruction(value: u32) -> bool {
-    return (word >> 29 == 0b111) && (word >> 27 != 0b11100);
 }

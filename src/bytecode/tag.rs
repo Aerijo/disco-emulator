@@ -1,5 +1,7 @@
 use crate::{ByteInstruction};
-use opcode{Opcode, from_opcode};
+use crate::utils::bits::{bitset};
+use super::opcode::{Opcode, from_opcode, to_opcode};
+use super::{ItPos, InstructionContext};
 
 enum Flags {
     HasValue = 1 << 31,
@@ -28,8 +30,8 @@ enum Flags {
  *   second half of some data. Without this, we could branching into wide instruction, replace this data half, and leave in invalid state
  */
 
-fn from(cached: ByteInstruction) -> u32 {
-    return cached[0];
+pub fn from(cached: ByteInstruction) -> u32 {
+    return cached.0;
 }
 
 pub fn get_wide(opcode: Opcode, context: InstructionContext, data: u16, extra: u32) -> (u32, u32) {
@@ -56,14 +58,14 @@ pub fn as_unpred_it(instr: u32) -> u32 {
     return instr | (Flags::ContextualUnpred as u32);
 }
 
-fn as_wide(instr: u32) -> u32 {
+pub fn as_wide(instr: u32) -> u32 {
     return instr | (Flags::Wide as u32)
 }
 
-fn get_start(opcode: Opcode, context: Context, data: u16, wide: bool) -> u32 {
+fn get_start(opcode: Opcode, context: InstructionContext, data: u16, wide: bool) -> u32 {
     let mut base = get_blank(context);
-    base |= from_opcode(opcode) << 16;
-    base |= data;
+    base |= (from_opcode(opcode) as u32) << 16;
+    base |= data as u32;
     if wide {
         base = as_wide(base);
     }
@@ -75,7 +77,7 @@ fn tag_extra(extra: u32) -> u32 {
     return extra | (Flags::HasValue as u32 | Flags::InITorWideData as u32) << 16;
 }
 
-pub fn get_blank(context: Context) -> u32 {
+pub fn get_blank(context: InstructionContext) -> u32 {
     return match context.it_pos {
         ItPos::None => 0,
         ItPos::Within | ItPos::Last => Flags::InITorWideData as u32,
@@ -86,40 +88,40 @@ pub fn reset_value() -> u32 {
     return Flags::HasValue as u32;
 }
 
-fn get_opcode(instr: u32) -> Opcode {
+pub fn get_opcode(instr: u32) -> Opcode {
     assert!(has_cached(instr));
     return to_opcode(((instr >> 16) & 0xFF) as u8);
 }
 
-fn get_opcode_num(instr: u32) -> u8 {
+pub fn get_opcode_num(instr: u32) -> u8 {
     return from_opcode(get_opcode(instr));
 }
 
-fn has_cached(instr: u32) -> bool {
+pub fn has_cached(instr: u32) -> bool {
     return !bitset(instr, Flags::HasValue as u32);
 }
 
-fn is_in_it(instr: u32) -> bool {
+pub fn is_in_it(instr: u32) -> bool {
     assert!(has_cached(instr));
     return bitset(instr, Flags::InITorWideData as u32);
 }
 
-fn is_unpredictable(instr: u32) -> bool {
+pub fn is_unpredictable(instr: u32) -> bool {
     assert!(has_cached(instr));
     return bitset(instr, Flags::Unpredictable as u32);
 }
 
-fn is_contextually_unpredictable(instr: u32) -> bool {
+pub fn is_contextually_unpredictable(instr: u32) -> bool {
     assert!(has_cached(instr));
     return bitset(instr, Flags::ContextualUnpred as u32);
 }
 
-fn is_wide(instr: u32) -> bool {
+pub fn is_wide(instr: u32) -> bool {
     assert!(has_cached(instr));
     return bitset(instr, Flags::Wide as u32);
 }
 
-fn is_wide_data(instr: u32) -> bool {
+pub fn is_wide_data(instr: u32) -> bool {
     assert!(!has_cached(instr));
     return bitset(instr, Flags::InITorWideData as u32);
 }

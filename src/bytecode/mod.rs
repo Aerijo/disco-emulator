@@ -1,8 +1,14 @@
-use crate::utils::bits::{bitset};
+use crate::{ByteInstruction};
+use crate::utils::bits::{bitset, is_wide_thumb};
 use std::fmt;
 
+mod narrow;
+use narrow::{decode_thumb_narrow};
+
+mod wide;
+use wide::{decode_thumb_wide};
+
 pub mod opcode;
-pub mod decode;
 pub mod tag;
 
 pub struct InstructionCache {
@@ -18,7 +24,7 @@ impl fmt::Debug for InstructionCache {
 impl InstructionCache {
     pub fn new() -> InstructionCache {
         return InstructionCache {
-            cache: Box::new([(BytecodeTag::reset_value() as u32) << 16; 1024 * 1024]),
+            cache: Box::new([(tag::reset_value() as u32) << 16; 1024 * 1024]),
         };
     }
 
@@ -30,23 +36,24 @@ impl InstructionCache {
         return Err(String::from("Out of bounds access"));
     }
 
-    pub fn write_cache_narrow(&mut self, address: u32, value: u32) {
+    pub fn write_cache_narrow(&mut self, address: u32, value: ByteInstruction) {
         assert!(0x0800_0000 <= address && address <= 0x080F_FFFF);
         let index = (address - 0x0800_0000) as usize;
-        self.cache[index] = value;
+        self.cache[index] = value.0;
     }
 
-    pub fn write_cache_wide(&mut self, address: u32, value: u32, extra: u32) {
+    pub fn write_cache_wide(&mut self, address: u32, value: ByteInstruction) {
         assert!(0x0800_0000 <= address && address <= 0x080F_FFFF);
         let index = (address - 0x0800_0000) as usize;
-        self.cache[index] = value;
-        self.cache[index + 1] = extra;
+        self.cache[index] = value.0;
+        self.cache[index + 1] = value.1;
     }
 }
 
 /**
  * The position of the instruction within an IT block
  */
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum ItPos {
     None,
     Within,
@@ -56,7 +63,25 @@ pub enum ItPos {
 /**
  * Context relevant to deciding if an instruction is unpredictable
  */
+#[derive(Debug, Copy, Clone)]
 pub struct InstructionContext {
     pc: u32,
     it_pos: ItPos,
+}
+
+impl InstructionContext {
+    pub fn new(pc: u32, it_pos: ItPos) -> InstructionContext {
+        return InstructionContext {
+            pc,
+            it_pos,
+        }
+    }
+}
+
+pub fn decode_thumb(thumb: u32, context: InstructionContext) -> (ByteInstruction, bool) {
+    return if is_wide_thumb(thumb) {
+        (decode_thumb_wide(thumb, context), true)
+    } else {
+        ((decode_thumb_narrow((thumb >> 16) as u16, context), tag::reset_value()), false)
+    };
 }
