@@ -2,11 +2,11 @@ use crate::{ByteInstruction};
 use opcode{Opcode, from_opcode};
 
 enum Flags {
-    HasValue = 1 << 15,
-    InITorWideData = 1 << 14,
-    Unpredictable = 1 << 13,
-    ITUnpredictable = 1 << 12,
-    Wide = 1 << 11,
+    HasValue = 1 << 31,
+    InITorWideData = 1 << 30,
+    Unpredictable = 1 << 29,
+    ContextualUnpred = 1 << 28,
+    Wide = 1 << 27,
 }
 
 /*
@@ -18,7 +18,7 @@ enum Flags {
  * - Not start: fetch, translate, and cache instruction
  * - In IT: throw branch-into-IT exception (discoboard actually allows this though, so it's recoverable)
  * - Unpredictable: Something about the instruction is wrong, such as invalid params or not last in IT, etc.
- * - ITunpredictable: Upredictability is due to being in an IT block. Useful for when jumping into IT block (technically illegal),
+ * - ContextualUnpred: Upredictability is due to being in an IT block. Useful for when jumping into IT block (technically illegal),
  *   but so we know to ignore the normal unpredictable mark
  *
  * - When caching an IT instruction, clear an appropriate number of subsequent instructions (e.g., length * wides worth) to ensure we don't
@@ -27,79 +27,99 @@ enum Flags {
  * - For 2nd half of wide instruction, first bit == 1 means it is not an instruction start, second bit == 1 means this instruction is the
  *   second half of some data. Without this, we could branching into wide instruction, replace this data half, and leave in invalid state
  */
-pub struct Tag {
-    tag: u16,
+
+fn from(cached: ByteInstruction) -> u32 {
+    return cached[0];
 }
 
-impl Tag {
-    fn from(cached: ByteInstruction) -> Tag {
-        return Tag {tag: (cached[0] >> 16) as u16};
-    }
+pub fn get_wide(opcode: Opcode, context: InstructionContext, data: u16, extra: u32) -> (u32, u32) {
+    return (get_start(opcode, context, data, true), tag_extra(extra));
+}
 
-    pub fn get_wide(opcode: Opcode, context: InstructionContext) -> u32 {
-        return Tag::get_tag(Flags::InITorWideData as u16, opcode, context);
-    }
+pub fn get_narrow(opcode: Opcode, context: InstructionContext, data: u16) -> u32 {
+    return get_start(opcode, context, data, false);
+}
 
-    pub fn get_narrow(opcode: Opcode, context: InstructionContext) -> u32 {
-        return Tag::get_tag(0, opcode, context);
-    }
+pub fn get_unpred_narrow(opcode: Opcode, context: InstructionContext, data: u16) -> u32 {
+    return as_unpred(get_narrow(opcode, context, data));
+}
 
-    fn get_tag(mut prepped: u16, opcode: Opcode, context: Context) -> u32 {
-        match context.it_pos {
-            ItPos::None => {},
-            ItPos::Within | ItPos::Last => {
-                prepped |= (Flags::InITorWideData as u16);
-            }
-        }
-        prepped |= from_opcode(opcode);
-        return (prepped as u32) << 16;
-    }
+pub fn as_unpred(instr: u32) -> u32 {
+    return instr | (Flags::Unpredictable as u32);
+}
 
-    fn reset_value() -> u16 {
-        return Flags::HasValue as u16;
-    }
+pub fn get_unpred_it_narrow(opcode: Opcode, context: InstructionContext, data: u16) -> u32 {
+    return as_unpred_it(get_narrow(opcode, context, data));
+}
 
-    // 0b00000 is narrow instruction, 0b00001 is wide instruction,
-    // anything else needs custom handling
-    fn get_meta(&self) -> u16 {
-        return self.tag >> 11;
-    }
+pub fn as_unpred_it(instr: u32) -> u32 {
+    return instr | (Flags::ContextualUnpred as u32);
+}
 
-    fn get_opcode(&self) -> Opcode {
-        assert!(self.has_cached());
-        return to_opcode(self.tag);
-    }
+fn as_wide(instr: u32) -> u32 {
+    return instr | (Flags::Wide as u32)
+}
 
-    fn get_opcode_num(&self) -> u16 {
-        return from_opcode(self.get_opcode());
+fn get_start(opcode: Opcode, context: Context, data: u16, wide: bool) -> u32 {
+    let mut base = get_blank(context);
+    base |= from_opcode(opcode) << 16;
+    base |= data;
+    if wide {
+        base = as_wide(base);
     }
+    return base;
+}
 
-    fn has_cached(&self) -> bool {
-        return !bitset(self.tag, Flags::HasValue as u16);
-    }
+fn tag_extra(extra: u32) -> u32 {
+    assert!((extra >> 30) == 0);
+    return extra | (Flags::HasValue as u32 | Flags::InITorWideData as u32) << 16;
+}
 
-    fn is_in_it(&self) -> bool {
-        assert!(self.has_cached());
-        return bitset(self.tag, Flags::InITorWideData as u16);
-    }
+pub fn get_blank(context: Context) -> u32 {
+    return match context.it_pos {
+        ItPos::None => 0,
+        ItPos::Within | ItPos::Last => Flags::InITorWideData as u32,
+    };
+}
 
-    fn is_unpredictable(&self) -> bool {
-        assert!(self.has_cached());
-        return bitset(self.tag, Flags::Unpredictable as u16);
-    }
+pub fn reset_value() -> u32 {
+    return Flags::HasValue as u32;
+}
 
-    fn is_it_unpredictable(&self) -> bool {
-        assert!(self.has_cached());
-        return bitset(self.tag, Flags::ITUnpredictable as u16);
-    }
+fn get_opcode(instr: u32) -> Opcode {
+    assert!(has_cached(instr));
+    return to_opcode(((instr >> 16) & 0xFF) as u8);
+}
 
-    fn is_wide(&self) -> bool {
-        assert!(self.has_cached());
-        return bitset(self.tag, Flags::Wide as u16);
-    }
+fn get_opcode_num(instr: u32) -> u8 {
+    return from_opcode(get_opcode(instr));
+}
 
-    fn is_wide_data(&self) -> bool {
-        assert!(!self.has_cached());
-        return bitset(self.tag, Flags::InITorWideData as u16);
-    }
+fn has_cached(instr: u32) -> bool {
+    return !bitset(instr, Flags::HasValue as u32);
+}
+
+fn is_in_it(instr: u32) -> bool {
+    assert!(has_cached(instr));
+    return bitset(instr, Flags::InITorWideData as u32);
+}
+
+fn is_unpredictable(instr: u32) -> bool {
+    assert!(has_cached(instr));
+    return bitset(instr, Flags::Unpredictable as u32);
+}
+
+fn is_contextually_unpredictable(instr: u32) -> bool {
+    assert!(has_cached(instr));
+    return bitset(instr, Flags::ContextualUnpred as u32);
+}
+
+fn is_wide(instr: u32) -> bool {
+    assert!(has_cached(instr));
+    return bitset(instr, Flags::Wide as u32);
+}
+
+fn is_wide_data(instr: u32) -> bool {
+    assert!(!has_cached(instr));
+    return bitset(instr, Flags::InITorWideData as u32);
 }

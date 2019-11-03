@@ -87,8 +87,7 @@ pub fn thumb_expand_imm_c(input: u32) -> (u32, CarryChange) {
 pub fn rotate_right_32_c(input: u32, shift: u32) -> (u32, CarryChange) {
     // p27
     assert!(shift != 0);
-    let m = shift % 32;
-    let result = (input >> m) | (input << (32 - m)); // TODO: Use u32.rotate_right
+    let result = input.rotate_right(shift % 32);
     let carry_out = if bitset(result, 31) {
         CarryChange::Set
     } else {
@@ -180,4 +179,8 @@ pub fn add_with_carry(x: u32, y: u32, carry_in: u32) -> (u32, bool, bool) {
     let overflow = (x_neg == y_neg) && (x_neg != result_neg);
 
     return (result as u32, carry_out, overflow);
+}
+
+pub fn extract_value(raw: u32, start: u32, size: u32) -> u32 {
+    return ((raw >> start) & (!0 >> (32 - size)));
 }
