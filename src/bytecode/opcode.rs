@@ -1,4 +1,5 @@
 #[repr(u8)]
+#[derive(Debug)]
 pub enum Opcode {
     Unimplemented, // N: orginal thumb[16], W: blank[16] - original thumb[32]
     AdcImm,
@@ -22,7 +23,7 @@ pub enum Opcode {
     CmpReg, // N: blank[10]-rm[4]-rn[4]
     EorReg, // N: blank[10]-rm[3]-rdn[3]
     Ldm,    // N: blank[5]-rt[3]-registers[8]
-    LdrLit, // N: blank[3]-rt[3]-offset[10]
+    LdrLit, // N: blank[3]-rt[3]-offset[10] / W: blank[12]-rt[4] + blank[17]-simm13[13]
     LdrImm, // N: rn[4]-rt[4]-imm8[8]
     LdrReg, // N: blank[7]-rm[3]-rn[3]-rt[3]
     LdrbImm, // N: blank[5]-imm5[5]-rn[3]-rt[3]
@@ -53,6 +54,7 @@ pub enum Opcode {
     SubImm, // N: blank[2]-rn[3]-rd[3]-imm8[8]
     SubReg, // N: blank[7]-rm[3]-rn[3]-rd[3]
     TstReg, // N: blank[12]-rm[3]-rn[3]
+    Undefined,
     Other,
     // etc.
 }

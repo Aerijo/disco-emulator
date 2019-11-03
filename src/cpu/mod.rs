@@ -126,7 +126,7 @@ impl CPU {
         };
     }
 
-    pub fn read_reg(&self, reg: u8) -> u32 {
+    pub fn read_reg(&self, reg: u32) -> u32 {
         assert!(reg <= 15);
         return match reg {
             13 => self.read_sp(),
@@ -151,6 +151,14 @@ impl CPU {
         return self.registers[15];
     }
 
+    pub fn read_lr(&self) -> u32 {
+        return self.registers[14];
+    }
+
+    pub fn write_lr(&mut self, value: u32) {
+        self.registers[14] = value;
+    }
+
     pub fn read_instruction_pc(&self) -> u32 {
         return self.instr_pc;
     }
@@ -172,7 +180,7 @@ impl CPU {
         return self.instr_pc;
     }
 
-    pub fn write_reg(&mut self, reg: u8, val: u32) {
+    pub fn write_reg(&mut self, reg: u32, val: u32) {
         assert!(reg <= 15);
         self.registers[reg as usize] = val;
     }
@@ -216,6 +224,10 @@ impl CPU {
 
     pub fn read_carry_flag(&self) -> bool {
         return self.apsr.c;
+    }
+
+    pub fn carry(&self) -> u32 {
+        return self.read_carry_flag() as u32;
     }
 
     pub fn set_overflow_flag(&mut self, enabled: bool) {

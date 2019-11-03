@@ -24,7 +24,7 @@ impl fmt::Debug for InstructionCache {
 impl InstructionCache {
     pub fn new() -> InstructionCache {
         return InstructionCache {
-            cache: Box::new([(tag::reset_value() as u32) << 16; 1024 * 1024]),
+            cache: Box::new([tag::reset_value(); 1024 * 1024]),
         };
     }
 

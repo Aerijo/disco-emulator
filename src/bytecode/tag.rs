@@ -34,8 +34,29 @@ pub fn from(cached: ByteInstruction) -> u32 {
     return cached.0;
 }
 
-pub fn get_wide(opcode: Opcode, context: InstructionContext, data: u16, extra: u32) -> (u32, u32) {
-    return (get_start(opcode, context, data, true), tag_extra(extra));
+pub fn get_wide(opcode: Opcode, context: InstructionContext, data: u32, extra: u32) -> ByteInstruction {
+    assert!((data >> 16) == 0);
+    return (get_start(opcode, context, data as u16, true), tag_extra(extra));
+}
+
+pub fn get_undefined_wide(context: InstructionContext, word: u32) -> ByteInstruction {
+    return get_wide(Opcode::Undefined, context, 0, (word << 2) >> 2);
+}
+
+pub fn get_unpred_wide(opcode: Opcode, context: InstructionContext, data: u32, extra: u32) -> ByteInstruction {
+    return as_unpred_w(get_wide(opcode, context, data, extra));
+}
+
+pub fn get_unpred_it_wide(opcode: Opcode, context: InstructionContext, data: u32, extra: u32) -> ByteInstruction {
+    return as_unpred_it_w(get_wide(opcode, context, data, extra));
+}
+
+pub fn as_unpred_w(instr: ByteInstruction) -> ByteInstruction {
+    return (as_unpred(instr.0), instr.1);
+}
+
+pub fn as_unpred_it_w(instr: ByteInstruction) -> ByteInstruction {
+    return (as_unpred_it(instr.0), instr.1);
 }
 
 pub fn get_narrow(opcode: Opcode, context: InstructionContext, data: u16) -> u32 {
@@ -98,30 +119,30 @@ pub fn get_opcode_num(instr: u32) -> u8 {
 }
 
 pub fn has_cached(instr: u32) -> bool {
-    return !bitset(instr, Flags::HasValue as u32);
+    return (instr & Flags::HasValue as u32) == 0;
 }
 
 pub fn is_in_it(instr: u32) -> bool {
     assert!(has_cached(instr));
-    return bitset(instr, Flags::InITorWideData as u32);
+    return (instr & Flags::InITorWideData as u32) > 0;
 }
 
 pub fn is_unpredictable(instr: u32) -> bool {
     assert!(has_cached(instr));
-    return bitset(instr, Flags::Unpredictable as u32);
+    return (instr & Flags::Unpredictable as u32) > 0;
 }
 
 pub fn is_contextually_unpredictable(instr: u32) -> bool {
     assert!(has_cached(instr));
-    return bitset(instr, Flags::ContextualUnpred as u32);
+    return (instr & Flags::ContextualUnpred as u32) > 0;
 }
 
 pub fn is_wide(instr: u32) -> bool {
     assert!(has_cached(instr));
-    return bitset(instr, Flags::Wide as u32);
+    return (instr & Flags::Wide as u32) > 0;
 }
 
 pub fn is_wide_data(instr: u32) -> bool {
     assert!(!has_cached(instr));
-    return bitset(instr, Flags::InITorWideData as u32);
+    return (instr & Flags::InITorWideData as u32) > 0;
 }

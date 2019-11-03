@@ -20,7 +20,7 @@ mod cpu;
 use cpu::{CPU, ExecMode};
 
 mod utils;
-use utils::bits::{bitset, add_with_carry, shift, shift_c, align};
+use utils::bits::{bitset, add_with_carry, shift, shift_c, align, word_align, sign_extend};
 
 use goblin::elf::Elf;
 use regex::Regex;
@@ -293,7 +293,9 @@ struct Board {
 }
 
 /**
- * Basically a VM. Uses standard fetch-decode-execute
+ * Basically a VM. Uses standard fetch-decode-execute on an intermediate bytecode format
+ * better suited to detecting bad things like unpredictable instructions and jumping into
+ * IT blocks, while also being more efficient to execute in software compared to the Thumb encoding
  */
 impl Board {
     fn new() -> Board {
@@ -317,13 +319,15 @@ impl Board {
      * 3a. If not cached, fetches direct bytes and decodes into the intermediate bytecode format
      * 3b. Caches decoded instruction
      * 4. Updates instruction pointed to by instruction PC to next instruction
-     * 5. Returns fetched intermediate bytecode instruction
+     * 5. Returns fetched intermediate bytecode instruction & bool of width
      */
     fn fetch(&mut self) -> Result<(ByteInstruction, bool), String> {
         let pc = self.cpu.update_instruction_address();
+        println!("Fetching from {:#010X}", pc);
         let mut instruction = self.instruction_cache.get_cached(pc)?;
         let mut start = tag::from(instruction);
         if !tag::has_cached(start) {
+            println!("No cache - translating");
             let raw = self.memory.get_instr_word(pc)?;
             let decoded = decode_thumb(raw, InstructionContext::new(pc, ItPos::None));
             instruction = decoded.0;
@@ -356,7 +360,7 @@ impl Board {
     fn execute(&mut self, instr: ByteInstruction, wide: bool) -> Result<(), String> {
         self.tick += 1;
         let opcode = tag::get_opcode(instr.0);
-        let data = (instr.0 & 0xFFFF) as u16;
+        let data = instr.0 & 0xFFFF;
         let extra = instr.1;
         return if wide {
             self.execute_wide(opcode, data, extra)
@@ -365,11 +369,31 @@ impl Board {
         }
     }
 
-    fn execute_wide(&mut self, opcode: Opcode, data: u16, extra: u32) -> Result<(), String> {
+    fn execute_wide(&mut self, opcode: Opcode, data: u32, extra: u32) -> Result<(), String> {
+        match opcode {
+            Opcode::LdrLit => self.w_ldr_lit(data, extra),
+            _ => {
+                println!("Unimplemented wide instruction {:?}", opcode);
+            }
+        }
         return Ok(());
     }
 
-    fn execute_narrow(&mut self, opcode: Opcode, data: u16) -> Result<(), String> {
+    fn execute_narrow(&mut self, opcode: Opcode, data: u32) -> Result<(), String> {
+        match opcode {
+            Opcode::Unimplemented => {
+                println!("Unimplemented narrow instruction");
+            }
+            Opcode::AdcImm => self.n_adc_imm(data),
+            Opcode::AdcReg => self.n_adc_reg(data),
+            Opcode::AddImm => self.n_add_imm(data),
+            Opcode::AddReg => self.n_add_reg(data),
+            Opcode::AndReg => self.n_and_reg(data),
+            _ => {
+                println!("Unimplemented narrow instruction {:?}", opcode);
+            }
+        }
+
         return Ok(());
     }
 
@@ -414,6 +438,7 @@ impl Board {
         }
 
         self.bx_write_pc(elf.entry as u32);
+        self.cpu.write_reg(15, elf.entry as u32);
 
         match self.memory.load_elf(elf, &bytes) {
             Ok(_) => {}
@@ -433,12 +458,14 @@ impl Board {
         self.print_mem_dump(address & !0xF, 0x8);
     }
 
-    fn read_reg(&self, reg: u8) -> u32 {
+    fn read_reg<T: Into<u32>>(&self, reg: T) -> u32 {
+        let reg = reg.into();
         return self.cpu.read_reg(reg);
     }
 
-    fn write_reg(&mut self, reg: u8, val: u32) {
+    fn write_reg<T: Into<u32>>(&mut self, reg: T, val: u32) {
         // TODO: Follow B1.4.7 p521
+        let reg = reg.into();
         self.cpu.write_reg(reg, val);
     }
 
@@ -460,23 +487,23 @@ impl Board {
     }
 
     fn read_sp(&self) -> u32 {
-        return self.read_reg(13) & !0b11;
+        return self.cpu.read_sp();
     }
 
     fn write_sp(&mut self, value: u32) {
-        self.write_reg(13, value & !0b11);
+        self.cpu.write_sp(value);
     }
 
     fn read_lr(&self) -> u32 {
-        return self.read_reg(14);
+        return self.cpu.read_lr();
     }
 
-    fn set_lr(&mut self, value: u32) {
-        self.write_reg(14, value);
+    fn write_lr(&mut self, value: u32) {
+        self.cpu.write_lr(value);
     }
 
     fn read_pc(&self) -> u32 {
-        return self.read_reg(15);
+        return self.cpu.read_pc();
     }
 
     fn set_pc(&mut self, address: u32) {
@@ -540,6 +567,10 @@ impl Board {
         }
     }
 
+    fn in_it_block(&self) -> bool {
+        return false;
+    }
+
     /**
      * Helper pseudocode functions
      */
@@ -599,43 +630,45 @@ impl Board {
      * Instruction handlers
      */
 
-    fn adc_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
+    fn n_adc_imm(&mut self, data: u32) {
         // A7.7.1
-        let (result, carry, overflow) = self.get_add_with_carry(rn, imm32);
-        self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nzcv(result, carry, overflow);
-        }
+        println!("TODO: ADC (imm) narrow");
     }
 
-    fn adc_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
+    fn n_adc_reg(&mut self, data: u32) {
         // A7.7.2
-        let shifted = self.get_shifted_register(rm, shift);
-        let (result, carry, overflow) = self.get_add_with_carry(rn, shifted);
+        let rd = data & 0b111;
+        let rm = data >> 3;
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rd), self.read_reg(rm), self.cpu.carry());
         self.write_reg(rd, result);
-        if setflags {
+        if !self.in_it_block() {
             self.set_flags_nzcv(result, carry, overflow);
         }
     }
 
-    fn add_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
+    fn n_add_imm(&mut self, data: u32) {
         // A7.7.3
-        let (result, carry, overflow) = self.get_add_with_no_carry(rn, imm32);
+        let imm32 = data & 0xFF;
+        let rn = data >> 11;
+        let rd = (data >> 8) & 0b111;
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), imm32, 0);
         self.write_reg(rd, result);
-        if setflags {
+        if !self.in_it_block() {
             self.set_flags_nzcv(result, carry, overflow);
         }
     }
 
-    fn add_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
+    fn n_add_reg(&mut self, data: u32) {
         // A7.7.4
-        let shifted = self.get_shifted_register(rm, shift);
-        let (result, carry, overflow) = self.get_add_with_no_carry(rn, shifted);
+        let rd = data & 0xF;
+        let rm = (data >> 4) & 0xF;
+        let rn = (data >> 8) & 0xF;
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), self.read_reg(rm), 0);
         if rd == 15 {
             self.alu_write_pc(result);
         } else {
             self.write_reg(rd, result);
-            if setflags {
+            if (data >> 12) > 0 {
                 self.set_flags_nzcv(result, carry, overflow);
             }
         }
@@ -670,23 +703,19 @@ impl Board {
         self.write_reg(rd, address);
     }
 
-    fn and_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange) {
+    fn w_and_imm(&mut self, data: u32, extra: u32) {
         // A7.7.8
-        let result = self.read_reg(rn) & imm32;
-        self.write_reg(rd, result);
-
-        if setflags {
-            self.set_flags_nz_alt_c(result, carry);
-        }
+        println!("TODO: AND (imm) wide");
     }
 
-    fn and_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
+    fn n_and_reg(&mut self, data: u32) {
         // A7.7.9
-        let (shifted, carry) = self.get_shift_with_carry(rm, shift);
-        let result = self.read_reg(rn) & shifted;
+        let rd = data & 0b111;
+        let rm = data >> 3;
+        let result = self.read_reg(rd) & self.read_reg(rm);
         self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nzc(result, carry);
+        if !self.in_it_block() {
+            self.set_flags_nz(result);
         }
     }
 
@@ -768,12 +797,12 @@ impl Board {
 
     fn branch_with_link(&mut self, address: u32) {
         // A7.7.18
-        self.set_lr(self.read_pc() | 0b1);
+        self.write_lr(self.read_pc() | 0b1);
         match self.branch_map.get(&address) {
             Some(name) => {
                 if name == "BSP_AUDIO_OUT_Play_Sample" {
                     // println!("({}) Audio out: {:#010X}", self.tick, self.read_reg(0));
-                    write!(self.log, "{} ", self.read_reg(0) as i16);
+                    write!(self.log, "{} ", self.read_reg(0u32) as i16);
                     self.samples += 1;
                 }
             }
@@ -787,13 +816,13 @@ impl Board {
         // A7.7.19
         let target = self.read_reg(rm);
         let next_instr_address = self.read_pc() + 2;
-        self.set_lr(next_instr_address & 0b1);
+        self.write_lr(next_instr_address & 0b1);
         self.blx_write_pc(target);
     }
 
     fn branch_exchange(&mut self, rm: u8) {
         // A7.7.20
-        self.bx_write_pc(self.cpu.read_reg(rm));
+        self.bx_write_pc(self.read_reg(rm));
     }
 
     fn cbz(&mut self, rn: u8, address: u32, nonzero: bool) {
@@ -973,10 +1002,10 @@ impl Board {
         }
     }
 
-    fn ldr_lit(&mut self, rt: u8, address: u32) {
+    fn w_ldr_lit(&mut self, data: u32, extra: u32) {
         // A7.7.44
-        // NOTE: As PC is fixed for given instruction, we calculate the address
-        // directly when building the instruction
+        let rt = data;
+        let address = ((word_align(self.read_pc()) as i32) + sign_extend(extra, 12)) as u32;
         let data = self.memory.read_word(address).unwrap(); // TODO: Proper error handling
         if rt == 15 {
             if (address & 0b11) == 0 {
@@ -1316,30 +1345,19 @@ fn main() {
     println!("\n{}\n", board);
     println!("finished init");
 
-    let mut cont = true;
     loop {
-        if cont {
-            cont = board.read_reg(0) != 0x29efb410;
-            if !cont { println!("\n{}\n", board); return; }
-        }
+        print!("press enter to continue");
+        io::stdout().flush().unwrap();
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+        print!("\n\n");
 
-        if !cont {
-            print!("press enter to continue");
-            io::stdout().flush().unwrap();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).unwrap();
-            print!("\n\n");
-            // cont = true;
-        }
-
-        // print!("{} - ", board.tick);
         match board.fetch() {
             Ok((i, w)) => {
-                if !cont { println!("Ok: {:?}", i); }
                 match board.execute(i, w) {
                     _ => {}
                 }
-                if !cont { println!("\n{}\n", board); }
+                println!("\n{}\n", board);
             }
             Err(e) => {
                 println!("Err: {}", e);
