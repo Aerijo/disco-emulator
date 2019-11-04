@@ -178,9 +178,9 @@ impl MemoryBus {
     }
 
     fn print_mem_area(&self, address: u32) {
-        let padding = "   ".repeat((address & 0xF) as usize);
-        println!("{}v{:#010X}", padding.to_string(), address);
-        self.print_mem_dump(address & !0xF, 0x8);
+        // let padding = "   ".repeat((address & 0xF) as usize);
+        // println!("{}v{:#010X}", padding.to_string(), address);
+        // self.print_mem_dump(address & !0xF, 0x8);
     }
 
     fn get_instr_word(&self, address: u32) -> Result<u32, String> {
@@ -330,7 +330,7 @@ impl Board {
      */
     fn fetch(&mut self) -> Result<(ByteInstruction, bool), String> {
         let pc = self.cpu.update_instruction_address();
-        println!("Fetching from {:#010X}", pc);
+        // println!("Fetching from {:#010X}", pc);
         let mut instruction = self.instruction_cache.get_cached(pc)?;
         let mut start = tag::from(instruction);
         if !tag::has_cached(start) {
@@ -367,7 +367,7 @@ impl Board {
     fn execute(&mut self, instr: ByteInstruction, wide: bool) -> Result<(), String> {
         self.tick += 1;
         let opcode = tag::get_opcode(instr.0);
-        println!("Executing {:?}", opcode);
+        // println!("Executing {:?}", opcode);
         let data = instr.0 & 0xFFFF;
         let extra = instr.1 & !(0b11 << 30);
         return if wide {
@@ -379,6 +379,7 @@ impl Board {
 
     fn execute_wide(&mut self, opcode: Opcode, data: u32, extra: u32) -> Result<(), String> {
         match opcode {
+            Opcode::AddImm => self.w_add_imm(data, extra),
             Opcode::Bl => self.w_bl(data, extra),
             Opcode::LdrLit => self.w_ldr_lit(data, extra),
             Opcode::StrImm => self.w_str_imm(data, extra),
@@ -676,6 +677,18 @@ impl Board {
         }
     }
 
+    fn w_add_imm(&mut self, data: u32, extra: u32) {
+        // A7.7.3
+        let imm32 = data << 30 | extra;
+        let rd = (data >> 4) & 0xF;
+        let rn = (data >> 8) & 0xF;
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), imm32, 0);
+        self.write_reg(rd, result);
+        if bitset(data, 12) {
+            self.set_flags_nzcv(result, carry, overflow);
+        }
+    }
+
     fn n_add_reg(&mut self, data: u32) {
         // A7.7.4
         let rd = data & 0xF;
@@ -765,10 +778,10 @@ impl Board {
     fn n_branch_cond(&mut self, data: u32) {
         // A7.7.12
         if self.cpu.check_condition(Condition::new(data >> 8)) {
-            println!("Condition passed");
+            // println!("Condition passed");
             self.branch_write_pc(self.read_pc().wrapping_add(shifted_sign_extend(data, 7, 1)));
         } else {
-            println!("Condition failed");
+            // println!("Condition failed");
         }
     }
 
@@ -817,7 +830,7 @@ impl Board {
             Some(name) => {
                 if name == "BSP_AUDIO_OUT_Play_Sample" {
                     // println!("({}) Audio out: {:#010X}", self.tick, self.read_reg(0));
-                    write!(self.log, "{} ", self.read_reg(0u32) as i16);
+                    write!(self.log, "{} ", self.read_reg(0u32) as i16).unwrap();
                     self.samples += 1;
                 } else {
                     println!("Skipping branch to {}", name);
@@ -1268,7 +1281,7 @@ impl Board {
         let address = if index { offset_address } else { rn_val };
         self.memory.write_word(address, self.read_reg(rt)).unwrap();
         if wback {
-            /** println!("writing back to {}", rn); */
+            // println!("writing back to {}", rn);
             self.write_reg(rn, offset_address);
         }
     }
@@ -1279,7 +1292,7 @@ impl Board {
         let rn = (data >> 3) & 0b111;
         let rm = data >> 6;
         let address = self.read_reg(rn).wrapping_add(self.read_reg(rm));
-        self.memory.write_mem_u(address, 4, self.read_reg(rt));
+        self.memory.write_mem_u(address, 4, self.read_reg(rt)).unwrap();
     }
 
     fn sub_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
