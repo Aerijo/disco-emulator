@@ -10,6 +10,7 @@ use narrow::{get_narrow_instruction};
 mod wide;
 use wide::{get_wide_instruction};
 
+// NOTE: condition checking is defined in A7.3.1 p178
 #[derive(Copy, Clone, Debug)]
 pub enum Condition {
     Equal = 0b0000,
@@ -31,7 +32,7 @@ pub enum Condition {
 }
 
 impl Condition {
-    fn from<T: Into<u32>>(code: T) -> Condition {
+    pub fn new<T: Into<u32>>(code: T) -> Condition {
         let code = code.into();
         assert!(code <= 0b1110);
         return match code {

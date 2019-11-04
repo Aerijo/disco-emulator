@@ -56,9 +56,9 @@ fn id_shift_add_sub_move_cmp(hword: u16, c: Context) -> u32 {
         0b00000..=0b00011 => {
             if (hword >> 6) == 0 {
                 if c.it_pos == ItPos::None {
-                    tag::get_narrow(Opcode::MovReg, c, (hword & 0b111) + (hword << 1) & (0b111 << 4) + 1 << 8) // A7.7.77 T2
+                    tag::get_narrow(Opcode::MovReg, c, (hword & 0b111) | (hword & (0b111 << 3)) << 1 | 1 << 8) // A7.7.77 T2
                 } else {
-                    tag::get_unpred_it_narrow(Opcode::MovReg, c, (hword & 0b111) + (hword << 1) & (0b111 << 4) + 1 << 8)
+                    tag::get_unpred_it_narrow(Opcode::MovReg, c, (hword & 0b111) | (hword & (0b111 << 3)) << 1 | 1 << 8)
                 }
             } else {
                 tag::get_narrow(Opcode::LslImm, c, hword) // A7.7.68 T1 NOTE: we will test the setflags condition when executing
@@ -67,20 +67,20 @@ fn id_shift_add_sub_move_cmp(hword: u16, c: Context) -> u32 {
         0b00100..=0b00111 => tag::get_narrow(Opcode::LsrImm, c, hword & 0x7FF), // A7.7.70 T1
         0b01000..=0b01011 => tag::get_narrow(Opcode::AsrImm, c, hword & 0x7FF), // A7.7.10 T1
         0b01100 => {
-            let base = (hword & 0b111) + (hword & (0b111 << 3)) << 5 + (hword & (0b111 << 6)) >> 2;
+            let base = (hword & 0b111) | (hword & (0b111 << 3)) << 5 | (hword & (0b111 << 6)) >> 2;
             if c.it_pos == ItPos::None {
-                tag::get_narrow(Opcode::AddReg, c, base + 1 << 12) // A7.7.4 T1
+                tag::get_narrow(Opcode::AddReg, c, base + (1 << 12)) // A7.7.4 T1
             } else {
                 tag::get_narrow(Opcode::AddReg, c, base)
             }
         }
         0b01101 => tag::get_narrow(Opcode::SubReg, c, hword & 0x7FF),
-        0b01110 => tag::get_narrow(Opcode::AddImm, c, ((hword >> 6) & 0b111) + (hword & 0x3F) << 8), // A7.7.3 T1
-        0b01111 => tag::get_narrow(Opcode::SubImm, c, ((hword >> 6) & 0b111) + (hword & 0x3F) << 8), // A7.7.174 T1
+        0b01110 => tag::get_narrow(Opcode::AddImm, c, ((hword >> 6) & 0b111) | (hword & 0x3F) << 8), // A7.7.3 T1
+        0b01111 => tag::get_narrow(Opcode::SubImm, c, ((hword >> 6) & 0b111) | (hword & 0x3F) << 8), // A7.7.174 T1
         0b10000..=0b10011 => tag::get_narrow(Opcode::MovImm, c, hword & 0x7FF), // A7.7.76 T1
         0b10100..=0b10111 => tag::get_narrow(Opcode::CmpImm, c, hword & 0x7FF), // A7.7.27 T1
-        0b11000..=0b11011 => tag::get_narrow(Opcode::AddImm, c, hword & 0x7FF + (hword & (0b111 << 8)) << 3), // A7.7.3 T2
-        0b11100..=0b11111 => tag::get_narrow(Opcode::SubImm, c, hword & 0x7FF + (hword & (0b111 << 8)) << 3), // A7.7.174 T2
+        0b11000..=0b11011 => tag::get_narrow(Opcode::AddImm, c, hword & 0x7FF | (hword & (0b111 << 8)) << 3), // A7.7.3 T2
+        0b11100..=0b11111 => tag::get_narrow(Opcode::SubImm, c, hword & 0x7FF | (hword & (0b111 << 8)) << 3), // A7.7.174 T2
         _ => unreachable!(),
     }
 }
@@ -100,7 +100,7 @@ fn id_data_processing(hword: u16, c: Context) -> u32 {
         0b1000 => Opcode::TstReg, // A7.7.189 T1
         0b1001 => Opcode::RsbImm, // A7.7.119 T1
         0b1010 => {
-            return tag::get_narrow(Opcode::CmpReg, c, (hword & 0b111) + (hword & (0b111 << 3)) << 1); // A7.7.28 T1
+            return tag::get_narrow(Opcode::CmpReg, c, (hword & 0b111) | (hword & (0b111 << 3)) << 1); // A7.7.28 T1
         }
         0b1011 => Opcode::CmnReg, // A7.7.26 T1
         0b1100 => Opcode::OrrReg, // A7.7.92 T1
@@ -232,5 +232,11 @@ fn id_misc(hword: u16, c: Context) -> u32 {
 }
 
 fn id_conditional_branch_supc(hword: u16, c: Context) -> u32 {
-    panic!();
+    // A5.2.6
+    assert!(matches(hword, 12, 0b1111, 0b1101));
+    return match (hword >> 8) & 0b1111 {
+        0b1110 => tag::get_narrow(Opcode::Udf, c, hword & 0xFF), // A7.7.194 T1
+        0b1111 => tag::get_narrow(Opcode::Svc, c, hword & 0xFF), // A7.7.178 T1
+        _ => tag::get_narrow(Opcode::BranchCond, c, hword & 0xFFF), // A7.7.12 T1
+    };
 }

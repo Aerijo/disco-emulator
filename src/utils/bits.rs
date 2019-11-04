@@ -53,6 +53,10 @@ pub fn shifted_sign_extend(value: u32, bits: u32, shift: u32) -> u32 {
     return (((value << (31 - bits)) as i32) >> (31 - bits - shift)) as u32;
 }
 
+// pub fn thum_expand_byte(input: u32, carry_in: bool) -> (u32, bool) {
+//
+// }
+
 // The pseudocode definition takes the current carry flag state
 // but does not use it in calculations. To make instructions stateless,
 // we instead return a value representing what to do with the current

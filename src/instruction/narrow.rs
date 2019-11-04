@@ -312,7 +312,7 @@ fn id_conditional_branch_supc(hword: u16, pc: u32) -> Instruction {
         _ => {
             let imm32 = sign_extend(((hword & 0xFF) << 1) as u32, 8) as u32;
             let address = pc.wrapping_add(imm32);
-            let cond = Condition::from((hword >> 8) & 0b1111);
+            let cond = Condition::new(((hword >> 8) & 0b1111) as u32);
             Instruction::CondBranch { address, cond } // A7.7.12 T1
         }
     };

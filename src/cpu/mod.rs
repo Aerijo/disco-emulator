@@ -113,7 +113,7 @@ pub struct CPU {
 impl CPU {
     pub fn new() -> CPU {
         return CPU {
-            registers: [0; 16],
+            registers: [0xABCDABCD; 16],
             instr_pc: 0,
             sp_unpredictable: false, // TODO: Ensure this value is maintained
             sp_main: 0,
@@ -269,7 +269,10 @@ impl fmt::Display for CPU {
         registers.push('\n');
         for i in 4..8 {
             let left = self.read_reg(i);
-            let right = self.read_reg(i + 8);
+            let right = match i + 8 {
+                15 => self.read_instruction_pc(),
+                _ => self.read_reg(i + 8),
+            };
             let special = ["r12", "sp", "lr", "pc"];
             let left_label = format!("r{}", i);
 
