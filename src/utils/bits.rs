@@ -38,8 +38,8 @@ pub fn word_align(address: u32) -> u32 {
     return align(address, 4);
 }
 
-pub fn sign_extend(num: u32, bits: u32) -> i32 {
-    return shifted_sign_extend(num, bits, 0) as i32;
+pub fn sign_extend(num: u32, bits: u32) -> u32 {
+    return shifted_sign_extend(num, bits, 0);
 }
 
 /**
@@ -52,10 +52,6 @@ pub fn shifted_sign_extend(value: u32, bits: u32, shift: u32) -> u32 {
     assert!(bits < 32 && shift < 32);
     return (((value << (31 - bits)) as i32) >> (31 - bits - shift)) as u32;
 }
-
-// pub fn thum_expand_byte(input: u32, carry_in: bool) -> (u32, bool) {
-//
-// }
 
 // The pseudocode definition takes the current carry flag state
 // but does not use it in calculations. To make instructions stateless,

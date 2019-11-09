@@ -17,7 +17,7 @@ pub struct InstructionCache {
 
 impl fmt::Debug for InstructionCache {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        return write!(f, "<cache>");
+        return write!(f, "<instruction_cache>");
     }
 }
 

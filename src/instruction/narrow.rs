@@ -292,13 +292,13 @@ fn id_if_then_hints(hword: u16) -> Instruction {
         Instruction::It {firstcond: op_a as u8, mask: op_b as u8} // A7.7.38 T1
     } else {
         match op_a {
-           0b0000 => Instruction::Nop, // A7.7.88 T1
-           0b0001 => Instruction::Yield, // A7.7.263 T1
-           0b0010 => Instruction::Wfe, // A7.7.261 T1
-           0b0011 => Instruction::Wfi, // A7.7.262 T1
-           0b0100 => Instruction::Sev, // A7.7.129 T1
-           _ => Instruction::Nop,
-       }
+            0b0000 => Instruction::Nop, // A7.7.88 T1
+            0b0001 => Instruction::Yield, // A7.7.263 T1
+            0b0010 => Instruction::Wfe, // A7.7.261 T1
+            0b0011 => Instruction::Wfi, // A7.7.262 T1
+            0b0100 => Instruction::Sev, // A7.7.129 T1
+            _ => Instruction::Nop,
+        }
     }
 }
 

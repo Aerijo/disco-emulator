@@ -31,10 +31,15 @@ pub fn decode_thumb_narrow(hword: u16, c: Context) -> u32 {
             }
         }
         0b11_0010..=0b11_0011 => {
+            let mut data = hword & 0x7FF;
+            if !bitset(hword, (hword >> 8) & 0x7) {
+                data |= 1 << 11;
+            }
+            let base = tag::get_narrow(Opcode::Ldm, c, data); // A7.7.41 T1
             if hword & 0xFF == 0 {
-                tag::get_unpred_narrow(Opcode::Ldm, c, hword & 0x7FF)
+                tag::as_unpred(base)
             } else {
-                tag::get_narrow(Opcode::Ldm, c, hword & 0x7FF) // A7.7.41 T1
+                base
             }
         }
         0b11_0100..=0b11_0111 => id_conditional_branch_supc(hword, c),
@@ -228,7 +233,100 @@ fn id_ldr_str_single(hword: u16, c: Context) -> u32 {
 }
 
 fn id_misc(hword: u16, c: Context) -> u32 {
-    panic!();
+    // A5.2.5
+    assert!(matches(hword, 12, 0b1111, 0b1011));
+    return match (hword >> 5) & 0x7F {
+        0b011_0011 => {
+            let base = tag::get_narrow(Opcode::Cps, c, hword & 0b11 | (hword & (1 << 3)) >> 1); // B5.2.1 T1
+            let base = if bitset(hword, 3) || bitset(hword, 2) || (!bitset(hword, 1) && !bitset(hword, 0)) {
+                tag::as_unpred(base)
+            } else {
+                base
+            };
+            return if c.it_pos != ItPos::None {
+                tag::as_unpred_it(base)
+            } else {
+                base
+            }
+        }
+        0b000_0000..=0b000_0011 => tag::get_narrow(Opcode::AddSpImm, c, (hword & 0x7F) << 2 | 13 << 10), // A7.7.5 T2
+        0b000_0100..=0b000_0111 => tag::get_narrow(Opcode::SubSpImm, c, (hword & 0x7F) << 2), // A7.7.176 T1
+        0b000_1000..=0b000_1111 |
+        0b001_1000..=0b001_1111 |
+        0b100_1000..=0b100_1111 |
+        0b101_1000..=0b101_1111 => {
+            let base = tag::get_narrow(Opcode::Cbz, c, (hword & (0x1F << 3)) >> 2 | (hword & (1 << 9)) >> 3 | (hword & 0b111) << 7 | (hword & (1 << 11)) >> 1); // A7.7.21 T1
+            if c.it_pos != ItPos::None {
+                tag::as_unpred_it(base)
+            } else {
+                base
+            }
+        }
+        0b001_0000..=0b001_0001 => tag::get_narrow(Opcode::Sxth, c, hword & 0x3F), // A7.7.184 T1
+        0b001_0010..=0b001_0011 => tag::get_narrow(Opcode::Sxtb, c, hword & 0x3F), // A7.7.182 T1
+        0b001_0100..=0b001_0101 => tag::get_narrow(Opcode::Uxth, c, hword & 0x3F), // A7.7.223 T1
+        0b001_0110..=0b001_0111 => tag::get_narrow(Opcode::Uxtb, c, hword & 0x3F), // A7.7.221 T1
+        0b010_0000..=0b010_1111 => {
+            let base = tag::get_narrow(Opcode::Push, c, hword & 0x1FF); // A7.7.101 T1
+            if (hword & 0x1FF) == 0 {
+                tag::as_unpred(base)
+            } else {
+                base
+            }
+        }
+        0b101_0000..=0b101_0001 => tag::get_narrow(Opcode::Rev, c, hword & 0x3F), // A7.7.113 T1
+        0b101_0010..=0b101_0011 => tag::get_narrow(Opcode::Rev16, c, hword & 0x3F), // A7.7.114 T1
+        0b101_0110..=0b101_0111 => tag::get_narrow(Opcode::Revsh, c, hword & 0x3F), // A7.7.115 T1
+        0b110_0000..=0b110_1111 => {
+            let base = tag::get_narrow(Opcode::Pop, c, hword & 0x1FF); // A7.7.99 T1
+            let base = if (hword & 0x1FF) == 0 {
+                tag::as_unpred(base)
+            } else {
+                base
+            };
+            if bitset(hword, 8) && c.it_pos == ItPos::Within {
+                tag::as_unpred_it(base)
+            } else {
+                base
+            }
+        }
+        0b111_0000..=0b111_0111 => tag::get_narrow(Opcode::Bkpt, c, hword & 0xFF), // A7.7.17 T1
+        0b111_1000..=0b111_1111 => id_if_then_hints(hword, c),
+        _ => tag::get_undefined_narrow(c, hword), // intentional
+    };
+}
+
+fn id_if_then_hints(hword: u16, c: Context) -> u32 {
+    // A5.2.5
+    assert!(matches(hword, 8, 0b1111_1111, 0b1011_1111));
+    let op_a = (hword >> 4) & 0xF;
+    let op_b = hword & 0xF;
+
+    return if hword & 0xF != 0 {
+        let base = tag::get_narrow(Opcode::It, c, hword & 0xFF); // A7.7.38 T1
+        let base = if (hword & (0xF << 4)) == 0 || (hword & (0xF << 4) == 0xE && (hword & 0xF).count_ones() != 1) {
+            tag::as_unpred(base)
+        } else {
+            base
+        };
+        if c.it_pos != ItPos::None {
+            tag::as_unpred_it(base)
+        } else {
+            base
+        }
+    } else {
+        let opcode = match op_a {
+            0b0000 => Opcode::Nop, // A7.7.88 T1
+            0b0001 => Opcode::Yield, // A7.7.263 T1
+            0b0010 => Opcode::Wfe, // A7.7.261 T1
+            0b0011 => Opcode::Wfi, // A7.7.262 T1
+            0b0100 => Opcode::Sev, // A7.7.129 T1
+            _ => {
+                return tag::get_unpred_narrow(Opcode::Nop, c, 0);
+            }
+        };
+        tag::get_narrow(opcode, c, 0)
+    }
 }
 
 fn id_conditional_branch_supc(hword: u16, c: Context) -> u32 {

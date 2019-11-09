@@ -43,6 +43,10 @@ pub fn get_undefined_wide(context: InstructionContext, word: u32) -> ByteInstruc
     return get_wide(Opcode::Undefined, context, 0, (word << 2) >> 2);
 }
 
+pub fn get_undefined_narrow(context: InstructionContext, word: u16) -> u32 {
+    return get_narrow(Opcode::Undefined, context, word);
+}
+
 pub fn get_unpred_wide(opcode: Opcode, context: InstructionContext, data: u32, extra: u32) -> ByteInstruction {
     return as_unpred_w(get_wide(opcode, context, data, extra));
 }

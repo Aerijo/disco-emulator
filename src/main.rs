@@ -178,9 +178,9 @@ impl MemoryBus {
     }
 
     fn print_mem_area(&self, address: u32) {
-        // let padding = "   ".repeat((address & 0xF) as usize);
-        // println!("{}v{:#010X}", padding.to_string(), address);
-        // self.print_mem_dump(address & !0xF, 0x8);
+        let padding = "   ".repeat((address & 0xF) as usize);
+        println!("{}v{:#010X}", padding.to_string(), address);
+        self.print_mem_dump(address & !0xF, 0x8);
     }
 
     fn get_instr_word(&self, address: u32) -> Result<u32, String> {
@@ -355,6 +355,8 @@ impl Board {
      * may raise an exception if the instruction is unpredictable, and could return
      * a modified version that is safe (consistent with the real board) to execute
      * if unpredictable behaviour is enabled.
+     *
+     * TODO
      */
     fn decode(&self, instruction: ByteInstruction) -> Opcode {
         return tag::get_opcode(tag::from(instruction));
@@ -367,7 +369,6 @@ impl Board {
     fn execute(&mut self, instr: ByteInstruction, wide: bool) -> Result<(), String> {
         self.tick += 1;
         let opcode = tag::get_opcode(instr.0);
-        // println!("Executing {:?}", opcode);
         let data = instr.0 & 0xFFFF;
         let extra = instr.1 & !(0b11 << 30);
         return if wide {
@@ -380,11 +381,18 @@ impl Board {
     fn execute_wide(&mut self, opcode: Opcode, data: u32, extra: u32) -> Result<(), String> {
         match opcode {
             Opcode::AddImm => self.w_add_imm(data, extra),
-            Opcode::Bl => self.w_bl(data, extra),
+            Opcode::Bl     => self.w_bl(data, extra),
+            Opcode::CmpImm => self.w_cmp_imm(data, extra),
+            Opcode::Ldm    => self.w_ldm(data, extra),
+            Opcode::LdrImm => self.w_ldr_imm(data, extra),
             Opcode::LdrLit => self.w_ldr_lit(data, extra),
+            Opcode::LslImm => self.w_lsl_imm(data, extra),
+            Opcode::MovImm => self.w_mov_imm(data, extra),
+            Opcode::Stm    => self.w_stm(data, extra),
             Opcode::StrImm => self.w_str_imm(data, extra),
+            Opcode::SubImm => self.w_sub_imm(data, extra),
             _ => {
-                println!("Unimplemented wide instruction {:?}", opcode);
+                println!("Unimplemented wide instruction {:?} : {:#06X} + {:#010X}", opcode, data, extra);
             }
         }
         return Ok(());
@@ -402,13 +410,21 @@ impl Board {
             Opcode::AndReg => self.n_and_reg(data),
             Opcode::Branch => self.n_branch(data),
             Opcode::BranchCond => self.n_branch_cond(data),
+            Opcode::CmpImm => self.n_cmp_imm(data),
             Opcode::CmpReg => self.n_cmp_reg(data),
+            Opcode::Cps    => self.n_cps(data),
+            Opcode::Ldm    => self.n_ldm(data),
             Opcode::LdrLit => self.n_ldr_lit(data),
+            Opcode::LdrImm => self.n_ldr_imm(data),
             Opcode::LdrReg => self.n_ldr_reg(data),
             Opcode::MovImm => self.n_mov_imm(data),
+            Opcode::MovReg => self.n_mov_reg(data),
+            Opcode::Pop    => self.n_pop(data),
+            Opcode::Push   => self.n_push(data),
+            Opcode::StrImm => self.n_str_imm(data),
             Opcode::StrReg => self.n_str_reg(data),
             _ => {
-                println!("Unimplemented narrow instruction {:?}", opcode);
+                println!("Unimplemented narrow instruction {:?} - {:#06X}", opcode, data);
             }
         }
 
@@ -567,13 +583,15 @@ impl Board {
         self.cpu.set_overflow_flag(overflow);
     }
 
-    fn set_flags_nz_alt_c(&mut self, result: u32, carry: CarryChange) {
+    fn set_flags_nz_alt_c(&mut self, result: u32, spill_tag: u32) {
         self.set_flags_nz(result);
-        match carry {
-            CarryChange::Set => self.cpu.set_carry_flag(true),
-            CarryChange::Clear => self.cpu.set_carry_flag(false),
-            CarryChange::Same => {},
-        };
+        match (spill_tag >> 2) & 0b11 {
+            0b00 => {}
+            0b01 => {}
+            0b10 => self.cpu.set_carry_flag(false),
+            0b11 => self.cpu.set_carry_flag(true),
+            _ => unreachable!(),
+        }
         // v unchanged
     }
 
@@ -778,10 +796,10 @@ impl Board {
     fn n_branch_cond(&mut self, data: u32) {
         // A7.7.12
         if self.cpu.check_condition(Condition::new(data >> 8)) {
-            // println!("Condition passed");
+            println!("Condition passed");
             self.branch_write_pc(self.read_pc().wrapping_add(shifted_sign_extend(data, 7, 1)));
         } else {
-            // println!("Condition failed");
+            println!("Condition failed");
         }
     }
 
@@ -799,11 +817,6 @@ impl Board {
 
     fn bic_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange) {
         // A7.7.15
-        let result = self.read_reg(rn) & !imm32;
-        self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nz_alt_c(result, carry);
-        }
     }
 
     fn bic_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
@@ -891,8 +904,17 @@ impl Board {
         self.set_flags_nzcv(result, carry, overflow);
     }
 
-    fn cmp_imm(&mut self, rn: u8, imm32: u32) {
+    fn n_cmp_imm(&mut self, data: u32) {
         // A7.7.27
+        let rn = data >> 8;
+        let imm32 = data & 0xFF;
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !imm32, 1);
+        self.set_flags_nzcv(result, carry, overflow);
+    }
+
+    fn w_cmp_imm(&mut self, data: u32, extra: u32) {
+        let imm32 = data << 30 | extra;
+        let rn = data >> 4;
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !imm32, 1);
         self.set_flags_nzcv(result, carry, overflow);
     }
@@ -905,7 +927,7 @@ impl Board {
         self.set_flags_nzcv(result, carry, overflow);
     }
 
-    fn cps(&mut self, _enable: bool, _affect_pri: bool, _affect_fault: bool) {
+    fn n_cps(&mut self, data: u32) {
         // A7.7.29
         // B5.2.1
         // TODO
@@ -935,11 +957,6 @@ impl Board {
 
     fn eor_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange) {
         // A7.7.35
-        let result = self.read_reg(rn) ^ imm32;
-        self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nz_alt_c(result, carry);
-        }
     }
 
     fn eor_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
@@ -973,21 +990,37 @@ impl Board {
         // TODO
     }
 
-    fn ldm(&mut self, rn: u8, registers: u16, wback: bool) {
-        // A7.7.41
-        assert!((registers >> 14) == 0);
+    fn n_ldm(&mut self, data: u32) {
+        let rn = (data >> 8) & 0x7;
+        let registers = data;
         let mut address = self.read_reg(rn);
-        for i in 0..=14u8 {
-            if bitset(registers, i.into()) {
-                let val = self.memory.read_word(address).unwrap();
-                self.write_reg(i, val);
+        for i in 0..=7u32 {
+            if bitset(registers, i) {
+                self.write_reg(i, self.memory.read_word(address).unwrap());
+                address += 4;
+            }
+        }
+        if bitset(data, 11) {
+            self.write_reg(rn, address);
+        }
+    }
+
+    fn w_ldm(&mut self, data: u32, extra: u32) {
+        // A7.7.41
+        let rn = data;
+        let registers = extra;
+        let wback = bitset(extra, 16);
+        let mut address = self.read_reg(rn);
+        for i in 0..=14u32 { // TODO: Skip stack pointer
+            if bitset(registers, i) {
+                self.write_reg(i, self.memory.read_word(address).unwrap());
                 address += 4;
             }
         }
         if bitset(registers, 15) {
             self.load_write_pc(self.memory.read_word(address).unwrap());
         }
-        if wback && !bitset(registers, rn.into()) {
+        if wback && !bitset(registers, rn) {
             self.write_reg(rn, address);
         }
     }
@@ -1012,10 +1045,22 @@ impl Board {
         }
     }
 
-    fn ldr_imm(&mut self, rt: u8, rn: u8, offset: i32, index: bool, wback: bool) {
+    fn n_ldr_imm(&mut self, data: u32) {
+        let rt = (data >> 8) & 0xF;
+        let rn = data >> 12;
+        let imm32 = (data & 0xFF) << 2;
+        let address = self.read_reg(rn).wrapping_add(imm32);
+        self.write_reg(rt, self.memory.read_word(address).unwrap());
+    }
+
+    fn w_ldr_imm(&mut self, data: u32, extra: u32) {
         // A7.7.43
-        // NOTE: On making the Instruction, we use a signed offset instead of a separate add bool
-        let offset_address = self.read_reg(rn).wrapping_add(offset as u32);
+        let rt = data & 0xF;
+        let rn = data >> 4;
+        let index = bitset(extra, 14);
+        let wback = bitset(extra, 13);
+
+        let offset_address = self.read_reg(rn).wrapping_add(sign_extend(extra, 12));
         let address = if index { offset_address } else { self.read_reg(rn) };
         let data = self.memory.read_word(address).unwrap();
         if wback { self.write_reg(rn, offset_address); }
@@ -1049,7 +1094,7 @@ impl Board {
     fn w_ldr_lit(&mut self, data: u32, extra: u32) {
         // A7.7.44
         let rt = data;
-        let address = ((word_align(self.read_pc()) as i32) + sign_extend(extra, 12)) as u32;
+        let address = word_align(self.read_pc()).wrapping_add(sign_extend(extra, 12));
         let data = self.memory.read_word(address).unwrap(); // TODO: Proper error handling
         if rt == 15 {
             if (address & 0b11) == 0 {
@@ -1160,12 +1205,18 @@ impl Board {
         self.write_reg(rt, data);
     }
 
-    fn lsl_imm(&mut self, rd: u8, rm: u8, shift_n: u32, setflags: bool) {
+    fn w_lsl_imm(&mut self, data: u32, extra: u32) {
         // A7.7.68
-        let (result, carry) = self.get_shift_with_carry(rm, Shift {shift_t: ShiftType::LSL, shift_n});
+        let rd = data & 0xF;
+        let rm = (data >> 4) & 0xF;
+        let setflags = bitset(data, 8);
+        let shift = extra;
+        let input = self.read_reg(rm);
+        let result = input << shift;
+        let carry_out = bitset(input, 32 - shift);
         self.write_reg(rd, result);
         if setflags {
-            self.set_flags_nzc(result, carry);
+            self.set_flags_nzc(result, carry_out);
         }
     }
 
@@ -1189,14 +1240,26 @@ impl Board {
         }
     }
 
-    fn mov_reg(&mut self, rd: u8, rm: u8, setflags: bool) {
+    fn w_mov_imm(&mut self, data: u32, extra: u32) {
+        // A7.7.76
+        let imm32 = data << 30 | extra;
+        let rd = (data >> 4) & 0xF;
+        self.write_reg(rd, imm32);
+        if bitset(data, 8) {
+            self.set_flags_nz_alt_c(imm32, data);
+        }
+    }
+
+    fn n_mov_reg(&mut self, data: u32) {
         // A7.7.77
+        let rd = data & 0xF;
+        let rm = (data >> 4) & 0xF;
         let result = self.read_reg(rm);
         if rd == 15 {
             self.alu_write_pc(result);
         } else {
             self.write_reg(rd, result);
-            if setflags {
+            if bitset(data, 8) {
                 self.set_flags_nz(result);
             }
         }
@@ -1214,40 +1277,41 @@ impl Board {
     }
 
     fn orr_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange) {
-        let result = self.read_reg(rn) | imm32;
-        self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nz_alt_c(result, carry);
-        }
+
     }
 
-    fn pop(&mut self, registers: u16) {
+    fn n_pop(&mut self, data: u32) {
+        println!("Popping {:0b}", data);
         let mut address = self.read_sp();
-        self.write_sp(address + 4 * registers.count_ones());
-        for i in 0..=14u8 {
-            if bitset(registers, i.into()) {
+        for i in (0..8u32).rev() {
+            if bitset(data, i) {
+                self.print_mem_area(address);
                 self.write_reg(i, self.memory.read_mem_a(address, 4).unwrap());
                 address += 4;
             }
         }
-        if bitset(registers, 15) {
+        if bitset(data, 8) {
+            self.print_mem_area(address);
             self.load_write_pc(self.memory.read_mem_a(address, 4).unwrap());
+            address += 4;
         }
+        self.write_sp(address);
     }
 
-    fn push(&mut self, registers: u16) {
+    fn n_push(&mut self, data: u32) {
         // A7.7.99
-        let mut address = self.read_sp() - 4 * registers.count_ones();
-        let orig_address = address;
-
-        for i in 0..=14u8 {
-            if bitset(registers, i.into()) {
+        let mut address = self.read_sp();
+        if bitset(data, 8) {
+            address -= 4;
+            self.memory.write_word(address, self.read_lr()).unwrap();
+        }
+        for i in (0..8u32).rev() {
+            if bitset(data, i) {
+                address -= 4;
                 self.memory.write_word(address, self.read_reg(i)).unwrap();
-                address += 4;
             }
         }
-
-        self.write_sp(orig_address);
+        self.write_sp(address);
     }
 
     fn rsb_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
@@ -1258,16 +1322,28 @@ impl Board {
         }
     }
 
-    fn stm(&mut self, rn: u8, registers: u16, wback: bool) {
+    fn w_stm(&mut self, data: u32, extra: u32) {
         // A7.7.159
+        let rn = data;
+        let registers = extra;
         let mut address = self.read_reg(rn);
-        for i in 0..=14u8 {
-            if bitset(registers, i.into()) {
+        for i in 0..=14u32 {
+            if bitset(registers, i) {
                 self.memory.write_word(address, self.read_reg(i)).unwrap();
                 address += 4;
             }
         }
-        if wback { self.write_reg(rn, address); }
+        if bitset(extra, 16) {
+            self.write_reg(rn, address);
+        }
+    }
+
+    fn n_str_imm(&mut self, data: u32) {
+        let imm32 = (data & 0xFF) << 2;
+        let rt = (data >> 8) & 0xF;
+        let rn = data >> 12;
+        let address = self.read_reg(rn).wrapping_add(imm32);
+        self.memory.write_word(address, self.read_reg(rt)).unwrap();
     }
 
     fn w_str_imm(&mut self, data: u32, extra: u32) {
@@ -1275,13 +1351,12 @@ impl Board {
         let rt = data & 0xF;
         let rn = data >> 4;
         let rn_val = self.read_reg(rn);
-        let offset_address = rn_val.wrapping_add(sign_extend(extra, 12) as u32);
+        let offset_address = rn_val.wrapping_add(sign_extend(extra, 12));
         let index = bitset(extra, 14);
         let wback = bitset(extra, 13);
         let address = if index { offset_address } else { rn_val };
         self.memory.write_word(address, self.read_reg(rt)).unwrap();
         if wback {
-            // println!("writing back to {}", rn);
             self.write_reg(rn, offset_address);
         }
     }
@@ -1295,11 +1370,14 @@ impl Board {
         self.memory.write_mem_u(address, 4, self.read_reg(rt)).unwrap();
     }
 
-    fn sub_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
-        // A7.7.171
+    fn w_sub_imm(&mut self, data: u32, extra: u32) {
+        // A7.7.174
+        let imm32 = data << 30 | extra;
+        let rd = (data >> 4) & 0xF;
+        let rn = (data >> 8) & 0xF;
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !imm32, 1);
         self.write_reg(rd, result);
-        if setflags {
+        if bitset(data, 12) {
             self.set_flags_nzcv(result, carry, overflow);
         }
     }
@@ -1384,9 +1462,10 @@ fn main() {
     println!("finished init");
     let mut cont = true;
     loop {
-        cont = cont && board.read_reg(0u32) != 0x2FAF0000;
+        cont = cont && board.cpu.read_instruction_pc() != 0x08019748;
 
         if !cont {
+            println!("\n{}\n", board);
             print!("press enter to continue");
             io::stdout().flush().unwrap();
             let mut input = String::new();
@@ -1396,10 +1475,10 @@ fn main() {
 
         match board.fetch() {
             Ok((i, w)) => {
+                println!("fetched {:?} ({})", tag::get_opcode(i.0), if w { "wide" } else { "narrow" });
                 match board.execute(i, w) {
                     _ => {}
                 }
-                if !cont { println!("\n{}\n", board); }
             }
             Err(e) => {
                 println!("Err: {}", e);
