@@ -405,7 +405,7 @@ fn id_data_proc_modified_immediate(word: u32, c: Context) -> ByteInstruction {
     let rd = (word >> 8) & 0xF;
     let setflags = bitset(word, 20);
     let (spill, extra) = thumb_expand_imm_c_alt(word);
-    let pro_spill = (word & (0xF << 8)) >> 4 | (word & (0xF << 16)) >> 8 | (word & (1 << 20)) >> 7 | spill;
+    let pro_spill = (word & (0xF << 8)) >> 4 | (word & (0xF << 16)) >> 8 | (word & (1 << 20)) >> 8 | spill;
     return match (word >> 21) & 0b1111 {
         0b0000 => {
             let base = if rd == 15 {
@@ -617,7 +617,6 @@ fn id_store_single(word: u32, c: Context) -> ByteInstruction {
             } else {
                 (!(word & 0xFF) + 1) & 0x1FFF
             };
-            println!("{:#010X}", imm13 | (word & (1 << 10)) << 4 | (word & (1 << 8)) << 5);
             tag::get_wide(Opcode::StrImm, c, (word >> 12) & 0xFF, imm13 | (word & (1 << 10)) << 4 | (word & (1 << 8)) << 5)
         }
         _ => tag::get_undefined_wide(c, word),

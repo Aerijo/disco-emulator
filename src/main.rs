@@ -3,9 +3,8 @@
 #![allow(unused_variables)]
 
 #[macro_use]
-extern crate lazy_static;
 extern crate goblin;
-extern crate regex;
+extern crate cpal;
 
 mod instruction;
 use instruction::{CarryChange, Condition, Instruction, ShiftType};
@@ -23,7 +22,6 @@ mod utils;
 use utils::bits::{bitset, add_with_carry, shift, shift_c, align, word_align, sign_extend, shifted_sign_extend};
 
 use goblin::elf::Elf;
-use regex::Regex;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
@@ -1495,9 +1493,10 @@ fn main() {
     let mut cont = true;
     loop {
         // cont = cont && board.samples < 48000 * 20;
-        cont = cont && board.cpu.read_instruction_pc() != 0x0801974a;
+        cont = cont && board.cpu.read_instruction_pc() != 0x08019756;
 
         if !cont {
+            println!("played {} samples", board.samples);
             return;
             println!("\n{}\n", board);
             print!("press enter to continue");
