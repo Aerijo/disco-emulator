@@ -6,6 +6,8 @@
 extern crate goblin;
 extern crate cpal;
 
+use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait};
+
 mod instruction;
 use instruction::{CarryChange, Condition, Instruction, ShiftType};
 
@@ -22,6 +24,10 @@ mod utils;
 use utils::bits::{bitset, add_with_carry, shift, shift_c, align, word_align, sign_extend, shifted_sign_extend};
 
 use goblin::elf::Elf;
+
+use std::thread;
+use std::sync::mpsc::{sync_channel, SyncSender};
+
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
@@ -60,6 +66,12 @@ enum Exception {
 #[derive(Debug)]
 enum AccessType {
     Normal,
+}
+
+#[derive(Debug)]
+enum AudioMessage {
+    Amplitude(i16),
+    Terminate,
 }
 
 #[derive(Debug)]
@@ -289,7 +301,7 @@ impl MemoryBus {
 struct Board {
     tick: u128,
     samples: u128,
-    log: fs::File,
+    audio_out: SyncSender<AudioMessage>,
     instruction_cache: InstructionCache,
     cpu: CPU,
     memory: MemoryBus,
@@ -303,11 +315,11 @@ struct Board {
  * IT blocks, while also being more efficient to execute in software compared to the Thumb encoding
  */
 impl Board {
-    fn new() -> Board {
+    fn new(sender: SyncSender<AudioMessage>) -> Board {
         return Board {
             tick: 0,
             samples: 0,
-            log: fs::File::create("amplitudes.txt").unwrap(),
+            audio_out: sender,
             cpu: CPU::new(),
             instruction_cache: InstructionCache::new(),
             memory: MemoryBus::new(),
@@ -843,8 +855,7 @@ impl Board {
         match self.branch_map.get(&address) {
             Some(name) => {
                 if name == "BSP_AUDIO_OUT_Play_Sample" {
-                    // println!("({}) Audio out: {:#010X}", self.tick, self.read_reg(0));
-                    // write!(self.log, "{} ", self.read_reg(0u32) as i16).unwrap();
+                    self.audio_out.send(AudioMessage::Amplitude((self.read_reg(0u32) & 0xFFFF) as i16)).unwrap();
                     self.samples += 1;
                 } else {
                     println!("Skipping branch to {}", name);
@@ -1473,10 +1484,35 @@ impl fmt::Display for Board {
     }
 }
 
+fn spawn_audio(buffer: usize) -> SyncSender<AudioMessage> {
+    let (sender, receiver) = sync_channel::<AudioMessage>(buffer);
+    thread::spawn(move|| {
+        let host = cpal::default_host();
+        let event_loop = host.event_loop();
+        let device = host.default_output_device().expect("no output device available");
+
+        let mut vec = vec![];
+
+        for msg in receiver {
+            match msg {
+                AudioMessage::Amplitude(x) => {
+                    vec.push(x);
+                    // println!("recieved");
+                }
+                AudioMessage::Terminate => {
+                    println!("Received {} samples", vec.len());
+                }
+            }
+        }
+    });
+    return sender;
+}
+
 fn main() {
     println!("Welcome to ARM emulator");
+    let sender = spawn_audio(10);
 
-    let mut board = Board::new();
+    let mut board = Board::new(sender);
 
     match board.load_elf_from_path(
         "/home/benjamin/gitlab/2300/assignments/comp2300-2019-assignment-2-part-2/.pio/build/disco_l476vg/firmware.elf",
@@ -1493,10 +1529,11 @@ fn main() {
     let mut cont = true;
     loop {
         // cont = cont && board.samples < 48000 * 20;
-        cont = cont && board.cpu.read_instruction_pc() != 0x08019756;
+        cont = cont && board.cpu.read_instruction_pc() != 0x0801975a;
 
         if !cont {
             println!("played {} samples", board.samples);
+            board.audio_out.send(AudioMessage::Terminate).unwrap();
             return;
             println!("\n{}\n", board);
             print!("press enter to continue");
