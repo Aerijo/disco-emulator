@@ -203,10 +203,10 @@ impl MemoryBus {
 
     fn read_mem_a_with_priv(&self, address: u32, size: usize, _access_type: &AccessType) -> Result<u32, String> {
         // B2.3.4 p583
-        if address != align(address, size as u32) {
-            // Set UFSR.UNALIGNED = true;
-            panic!("UsageFault");
-        }
+        // if address != align(address, size as u32) {
+        //     // Set UFSR.UNALIGNED = true;
+        //     panic!("UsageFault");
+        // }
 
         // let memaddrdesc = validate_address(address, access_type, false); // TODO
         let location = self.address_to_physical(address)?;
@@ -465,6 +465,7 @@ impl Board {
                 "init" |
                 "init_joystick" |
                 "lcd_init" |
+                "lcd_write_char" |
                 "lcd_write_string" |
                 "lcd_update_display" |
                 "BSP_AUDIO_OUT_Play_Sample" => {
@@ -845,7 +846,7 @@ impl Board {
             Some(name) => {
                 if name == "BSP_AUDIO_OUT_Play_Sample" {
                     // println!("({}) Audio out: {:#010X}", self.tick, self.read_reg(0));
-                    write!(self.log, "{} ", self.read_reg(0u32) as i16).unwrap();
+                    // write!(self.log, "{} ", self.read_reg(0u32) as i16).unwrap();
                     self.samples += 1;
                 } else {
                     println!("Skipping branch to {}", name);
@@ -1493,10 +1494,11 @@ fn main() {
     println!("finished init");
     let mut cont = true;
     loop {
-        cont = cont && board.samples < 48000 * 20;
-        // cont = cont && board.cpu.read_instruction_pc() != 0x08019748;
+        // cont = cont && board.samples < 48000 * 20;
+        cont = cont && board.cpu.read_instruction_pc() != 0x0801974a;
 
         if !cont {
+            return;
             println!("\n{}\n", board);
             print!("press enter to continue");
             io::stdout().flush().unwrap();
