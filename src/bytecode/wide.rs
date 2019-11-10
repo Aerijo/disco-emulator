@@ -76,7 +76,7 @@ fn id_data_processing_shifted_register(word: u32, c: Context) -> ByteInstruction
     let pro_data_alt = rd | rm << 4 | (setflags as u32) << 8;
 
     let shift_t = (word >> 4) & 0b11;
-    let mut shift_n = (word >> 6) & 0b11 | (word >> 10) & 0b111;
+    let mut shift_n = (word >> 6) & 0b11 | (word & (0b111 << 12)) >> 10;
     if shift_n == 0 && (shift_t == 0b01 || shift_t == 0b10) {
         shift_n = 32;
     }
@@ -206,7 +206,7 @@ fn id_data_processing_shifted_register(word: u32, c: Context) -> ByteInstruction
             let base = if rd == 15 {
                 tag::get_wide(Opcode::CmpReg, c, pro_data_comp, pro_extra) // A7.7.28 T3
             } else {
-                tag::get_wide(Opcode::SubReg, c, pro_data_comp, pro_extra) // A7.7.175 T2
+                tag::get_wide(Opcode::SubReg, c, pro_data, pro_extra) // A7.7.175 T2
             };
             if rd == 13 || (rd == 15 && !setflags) || rn == 15 || rm == 13 || rm == 15 {
                 tag::as_unpred_w(base)
@@ -516,11 +516,84 @@ fn id_data_proc_modified_immediate(word: u32, c: Context) -> ByteInstruction {
 }
 
 fn id_long_multiply_div(word: u32, c: Context) -> ByteInstruction {
-    return tag::get_undefined_wide(c, word);
+    // A5.3.17
+    assert!(matches(word, 23, 0b111_1111_11, 0b111_1101_11));
+    let rn = (word >> 16) & 0xF;
+    let rm = word & 0xF;
+    let op1 = (word >> 20) & 0b111;
+    let op2 = (word >> 4) & 0xF;
+
+    let rd_lo = (word >> 12) & 0xF;
+    let rd_hi = (word >> 8) & 0xF;
+    let rd = rd_hi;
+
+    return match (op1, op2) {
+        (0b000, 0b0000) => {
+            let base = tag::get_wide(Opcode::Smull, c, rn | rm << 4, rd_lo | rd_hi << 4); // A7.7.149 T1
+            if rd_lo == 13 || rd_lo == 15 || rd_hi == 13 || rd_hi == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 || rd_hi == rd_lo {
+                tag::as_unpred_w(base)
+            } else {
+                base
+            }
+        }
+        (0b001, 0b1111) => {
+            let base = tag::get_wide(Opcode::Sdiv, c, rd | rn << 4, rm); // A7.7.127 T1
+            if rd_lo != 15 || rd == 13 || rd == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                tag::as_unpred_w(base)
+            } else {
+                base
+            }
+        }
+        (0b010, 0b0000) => {
+            let base = tag::get_wide(Opcode::Umull, c, rn | rm << 4, rd_lo | rd_hi << 4); // A7.7.204 T1
+            if rd_lo == 13 || rd_lo == 15 || rd_hi == 13 || rd_hi == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 || rd_hi == rd_lo {
+                tag::as_unpred_w(base)
+            } else {
+                base
+            }
+        }
+        (0b011, 0b1111) => {
+            let base = tag::get_wide(Opcode::Udiv, c, rd | rn << 4, rm); // A7.7.195 T1
+            if rd_lo != 15 || rd == 13 || rd == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                tag::as_unpred_w(base)
+            } else {
+                base
+            }
+        }
+        _ => tag::get_undefined_wide(c, word)
+    };
 }
 
 fn id_multiply_diff(word: u32, c: Context) -> ByteInstruction {
-    return tag::get_undefined_wide(c, word);
+    // A5.3.16
+    assert!(matches(word, 6, 0b111_1111_11_000_0000_0000_0000_11, 0b111_1101_10_000_0000_0000_0000_00));
+    let op1 = (word >> 20) & 0b111;
+    let op2 = (word >> 4) & 0b11;
+    let ra = (word >> 12) & 0xF;
+
+    let rn = (word >> 16) & 0xF;
+    let rd = (word >> 8) & 0xF;
+    let rm = word & 0xF;
+
+    return match op1 {
+        0b000 => {
+            if op2 == 0b01 {
+                tag::get_undefined_wide(c, word)
+            } else if op2 != 0b00 {
+                tag::get_undefined_wide(c, word)
+            } else if ra == 15 {
+                let base = tag::get_wide(Opcode::Mul, c, rd | rn << 4, rm); // A7.7.84 T2
+                if rd == 13 || rd == 15 || rn == 13 || rn == 15 || rm == 13 || rm == 15 {
+                    tag::as_unpred_w(base)
+                } else {
+                    base
+                }
+            } else {
+                tag::get_undefined_wide(c, word)
+            }
+        }
+        _ => tag::get_undefined_wide(c, word),
+    };
 }
 
 fn id_data_proc_register(word: u32, c: Context) -> ByteInstruction {

@@ -158,28 +158,28 @@ impl MemoryBus {
     }
 
     fn print_mem_dump(&self, address: u32, length: usize) {
-        let mut c = 16;
-        for i in address..(address + (length as u32) * 4) {
-            if c == 0 {
-                c = 16;
-                print!("\n");
-            }
-            c -= 1;
-            let val = match self.read_byte(i) {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("{}", e);
-                    return;
-                }
-            };
-            print!("{:02X} ", val);
-        }
-        print!("\n");
+        // let mut c = 16;
+        // for i in address..(address + (length as u32) * 4) {
+        //     if c == 0 {
+        //         c = 16;
+        //         print!("\n");
+        //     }
+        //     c -= 1;
+        //     let val = match self.read_byte(i) {
+        //         Ok(v) => v,
+        //         Err(e) => {
+        //             println!("{}", e);
+        //             return;
+        //         }
+        //     };
+        //     print!("{:02X} ", val);
+        // }
+        // print!("\n");
     }
 
     fn print_mem_area(&self, address: u32) {
         let padding = "   ".repeat((address & 0xF) as usize);
-        println!("{}v{:#010X}", padding.to_string(), address);
+        // println!("{}v{:#010X}", padding.to_string(), address);
         self.print_mem_dump(address & !0xF, 0x8);
     }
 
@@ -388,9 +388,13 @@ impl Board {
             Opcode::LdrLit => self.w_ldr_lit(data, extra),
             Opcode::LslImm => self.w_lsl_imm(data, extra),
             Opcode::MovImm => self.w_mov_imm(data, extra),
+            Opcode::Mul    => self.w_mul(data, extra),
+            Opcode::RsbImm => self.w_rsb_imm(data, extra),
             Opcode::Stm    => self.w_stm(data, extra),
             Opcode::StrImm => self.w_str_imm(data, extra),
             Opcode::SubImm => self.w_sub_imm(data, extra),
+            Opcode::SubReg => self.w_sub_reg(data, extra),
+            Opcode::Udiv   => self.w_udiv(data, extra),
             _ => {
                 println!("Unimplemented wide instruction {:?} : {:#06X} + {:#010X}", opcode, data, extra);
             }
@@ -400,9 +404,6 @@ impl Board {
 
     fn execute_narrow(&mut self, opcode: Opcode, data: u32) -> Result<(), String> {
         match opcode {
-            Opcode::Unimplemented => {
-                println!("Unimplemented narrow instruction");
-            }
             Opcode::AdcImm => self.n_adc_imm(data),
             Opcode::AdcReg => self.n_adc_reg(data),
             Opcode::AddImm => self.n_add_imm(data),
@@ -410,6 +411,7 @@ impl Board {
             Opcode::AndReg => self.n_and_reg(data),
             Opcode::Branch => self.n_branch(data),
             Opcode::BranchCond => self.n_branch_cond(data),
+            Opcode::Bx     => self.n_bx(data),
             Opcode::CmpImm => self.n_cmp_imm(data),
             Opcode::CmpReg => self.n_cmp_reg(data),
             Opcode::Cps    => self.n_cps(data),
@@ -421,6 +423,7 @@ impl Board {
             Opcode::MovReg => self.n_mov_reg(data),
             Opcode::Pop    => self.n_pop(data),
             Opcode::Push   => self.n_push(data),
+            Opcode::Stm    => self.n_stm(data),
             Opcode::StrImm => self.n_str_imm(data),
             Opcode::StrReg => self.n_str_reg(data),
             _ => {
@@ -549,12 +552,12 @@ impl Board {
         self.cpu.inc_pc(wide);
     }
 
-    fn get_shifted_register(&self, reg: u8, s: Shift) -> u32 {
-        return shift(self.read_reg(reg), s, self.cpu.read_carry_flag() as u32);
+    fn get_shifted_register(&self, reg: u32, shift_t: u32, shift_n: u32) -> u32 {
+        return shift(self.read_reg(reg), shift_t, shift_n, self.cpu.read_carry_flag() as u32);
     }
 
-    fn get_shift_with_carry(&self, reg: u8, s: Shift) -> (u32, bool) {
-        return shift_c(self.read_reg(reg), s, self.cpu.read_carry_flag() as u32);
+    fn get_shift_with_carry(&self, reg: u32, shift_t: u32, shift_n: u32) -> (u32, bool) {
+        return shift_c(self.read_reg(reg), shift_t, shift_n, self.cpu.read_carry_flag() as u32);
     }
 
     fn get_add_with_carry(&self, reg: u8, imm32: u32) -> (u32, bool, bool) {
@@ -597,11 +600,11 @@ impl Board {
 
     fn shift_imm(&mut self, rd: u8, rm: u8, shift: Shift, setflags: bool) {
         // Handles LSL, LSR, ASR, etc., as their encodings (T2 at least) are all very similar
-        let (result, carry) = self.get_shift_with_carry(rm, shift);
-        self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nzc(result, carry);
-        }
+        // let (result, carry) = self.get_shift_with_carry(rm, shift);
+        // self.write_reg(rd, result);
+        // if setflags {
+        //     self.set_flags_nzc(result, carry);
+        // }
     }
 
     fn in_it_block(&self) -> bool {
@@ -734,16 +737,16 @@ impl Board {
 
     fn add_sp_reg(&mut self, rd: u8, rm: u8, shift: Shift, setflags: bool) {
         // A7.7.6
-        let shifted = self.get_shifted_register(rm, shift);
-        let (result, carry, overflow) = add_with_carry(self.read_sp(), shifted, 0);
-        if rd == 15 {
-            self.alu_write_pc(result);
-        } else {
-            self.write_reg(rd, result);
-            if setflags {
-                self.set_flags_nzcv(result, carry, overflow);
-            }
-        }
+        // let shifted = self.get_shifted_register(rm, shift);
+        // let (result, carry, overflow) = add_with_carry(self.read_sp(), shifted, 0);
+        // if rd == 15 {
+        //     self.alu_write_pc(result);
+        // } else {
+        //     self.write_reg(rd, result);
+        //     if setflags {
+        //         self.set_flags_nzcv(result, carry, overflow);
+        //     }
+        // }
     }
 
     fn adr(&mut self, rd: u8, address: u32) {
@@ -770,22 +773,21 @@ impl Board {
 
     fn asr_imm(&mut self, rd: u8, rm: u8, shift: Shift, setflags: bool) {
         // A7.7.10
-        assert!(shift.shift_t == ShiftType::ASR);
-        let (result, carry) = self.get_shift_with_carry(rm, shift);
-        self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nzc(result, carry);
-        }
+        // let (result, carry) = self.get_shift_with_carry(rm, shift);
+        // self.write_reg(rd, result);
+        // if setflags {
+        //     self.set_flags_nzc(result, carry);
+        // }
     }
 
     fn asr_reg(&mut self, rd: u8, rm: u8, rn: u8, setflags: bool) {
         // A7.7.11
-        let shift_n = self.read_reg(rm) & 0xFF;
-        let (result, carry) =  self.get_shift_with_carry(rn, Shift {shift_t: ShiftType::ASR, shift_n});
-        self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nzc(result, carry);
-        }
+        // let shift_n = self.read_reg(rm) & 0xFF;
+        // let (result, carry) =  self.get_shift_with_carry(rn, Shift {shift_t: ShiftType::ASR, shift_n});
+        // self.write_reg(rd, result);
+        // if setflags {
+        //     self.set_flags_nzc(result, carry);
+        // }
     }
 
     fn n_branch(&mut self, data: u32) {
@@ -796,10 +798,10 @@ impl Board {
     fn n_branch_cond(&mut self, data: u32) {
         // A7.7.12
         if self.cpu.check_condition(Condition::new(data >> 8)) {
-            println!("Condition passed");
+            // println!("Condition passed");
             self.branch_write_pc(self.read_pc().wrapping_add(shifted_sign_extend(data, 7, 1)));
         } else {
-            println!("Condition failed");
+            // println!("Condition failed");
         }
     }
 
@@ -821,12 +823,12 @@ impl Board {
 
     fn bic_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
         // A7.7.16
-        let (shifted, carry) = self.get_shift_with_carry(rm, shift);
-        let result = self.read_reg(rn) & !shifted;
-        self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nzc(result, carry);
-        }
+        // let (shifted, carry) = self.get_shift_with_carry(rm, shift);
+        // let result = self.read_reg(rn) & !shifted;
+        // self.write_reg(rd, result);
+        // if setflags {
+        //     self.set_flags_nzc(result, carry);
+        // }
     }
 
     fn bkpt(&mut self, _imm32: u32) {
@@ -863,8 +865,9 @@ impl Board {
         self.blx_write_pc(target);
     }
 
-    fn branch_exchange(&mut self, rm: u8) {
+    fn n_bx(&mut self, data: u32) {
         // A7.7.20
+        let rm = data;
         self.bx_write_pc(self.read_reg(rm));
     }
 
@@ -899,9 +902,9 @@ impl Board {
 
     fn cmn_reg(&mut self, rn: u8, rm: u8, shift: Shift) {
         // A7.7.26
-        let shifted = self.get_shifted_register(rm, shift);
-        let (result, carry, overflow) = self.get_add_with_no_carry(rn, shifted);
-        self.set_flags_nzcv(result, carry, overflow);
+        // let shifted = self.get_shifted_register(rm, shift);
+        // let (result, carry, overflow) = self.get_add_with_no_carry(rn, shifted);
+        // self.set_flags_nzcv(result, carry, overflow);
     }
 
     fn n_cmp_imm(&mut self, data: u32) {
@@ -961,12 +964,12 @@ impl Board {
 
     fn eor_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
         // A7.7.36
-        let (shifted, carry) = self.get_shift_with_carry(rm, shift);
-        let result = self.read_reg(rn) ^ shifted;
-        self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nzc(result, carry);
-        }
+        // let (shifted, carry) = self.get_shift_with_carry(rm, shift);
+        // let result = self.read_reg(rn) ^ shifted;
+        // self.write_reg(rd, result);
+        // if setflags {
+        //     self.set_flags_nzc(result, carry);
+        // }
     }
 
     fn isb(&mut self, _option: u8) {
@@ -1133,9 +1136,9 @@ impl Board {
     fn ldrb_reg(&mut self, rt: u8, rm: u8, rn: u8, shift_n: u32) {
         // A7.7.48
         // NOTE: This has index, add, and wback, but they are always true, true, false
-        let offset = self.get_shifted_register(rm, Shift {shift_t: ShiftType::LSL, shift_n});
-        let address = self.read_reg(rn).wrapping_add(offset);
-        self.write_reg(rt, self.memory.read_byte(address).unwrap() as u32);
+        // let offset = self.get_shifted_register(rm, Shift {shift_t: ShiftType::LSL, shift_n});
+        // let address = self.read_reg(rn).wrapping_add(offset);
+        // self.write_reg(rt, self.memory.read_byte(address).unwrap() as u32);
     }
 
     fn ldbrt(&mut self, rt: u8, rn: u8, offset: u32) {
@@ -1199,10 +1202,10 @@ impl Board {
 
     fn ldrh_reg(&mut self, rt: u8, rm: u8, rn: u8, shift_n: u32) {
         // A7.7.57
-        let offset = self.get_shifted_register(rm, Shift {shift_t: ShiftType::LSL, shift_n});
-        let address = self.read_reg(rn).wrapping_add(offset);
-        let data = self.memory.read_mem_u(address, 2).unwrap();
-        self.write_reg(rt, data);
+        // let offset = self.get_shifted_register(rm, Shift {shift_t: ShiftType::LSL, shift_n});
+        // let address = self.read_reg(rn).wrapping_add(offset);
+        // let data = self.memory.read_mem_u(address, 2).unwrap();
+        // self.write_reg(rt, data);
     }
 
     fn w_lsl_imm(&mut self, data: u32, extra: u32) {
@@ -1222,12 +1225,12 @@ impl Board {
 
     fn lsl_reg(&mut self, rd: u8, rn: u8, rm: u8, setflags: bool) {
         // A7.7.69
-        let shift_n = self.read_reg(rm) & 0xF;
-        let (result, carry) = self.get_shift_with_carry(rn, Shift {shift_t: ShiftType::LSL, shift_n});
-        self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nzc(result, carry);
-        }
+        // let shift_n = self.read_reg(rm) & 0xF;
+        // let (result, carry) = self.get_shift_with_carry(rn, Shift {shift_t: ShiftType::LSL, shift_n});
+        // self.write_reg(rd, result);
+        // if setflags {
+        //     self.set_flags_nzc(result, carry);
+        // }
     }
 
     fn n_mov_imm(&mut self, data: u32) {
@@ -1265,15 +1268,15 @@ impl Board {
         }
     }
 
-    fn mul(&mut self, rd: u8, rn: u8, rm: u8, setflags: bool) {
+    fn w_mul(&mut self, data: u32, extra: u32) {
         // A7.7.84
-        let op1 = self.read_reg(rn) as i32;
-        let op2 = self.read_reg(rm) as i32;
-        let result = op1.wrapping_mul(op2) as u32;
+        let rd = data & 0xF;
+        let rn = data >> 4;
+        let rm = extra;
+        let op1 = self.read_reg(rn);
+        let op2 = self.read_reg(rm);
+        let result = op1.wrapping_mul(op2);
         self.write_reg(rd, result);
-        if setflags {
-            self.set_flags_nz(result);
-        }
     }
 
     fn orr_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool, carry: CarryChange) {
@@ -1281,7 +1284,7 @@ impl Board {
     }
 
     fn n_pop(&mut self, data: u32) {
-        println!("Popping {:0b}", data);
+        // println!("Popping {:0b}", data);
         let mut address = self.read_sp();
         for i in (0..8u32).rev() {
             if bitset(data, i) {
@@ -1314,12 +1317,29 @@ impl Board {
         self.write_sp(address);
     }
 
-    fn rsb_imm(&mut self, rd: u8, rn: u8, imm32: u32, setflags: bool) {
+    fn w_rsb_imm(&mut self, data: u32, extra: u32) {
+        let imm32 = data << 30 | extra;
+        let rd = (data >> 4) & 0xF;
+        let rn = (data >> 8) & 0xF;
         let (result, carry, overflow) = add_with_carry(!self.read_reg(rn), imm32, 1);
         self.write_reg(rd, result);
-        if setflags {
+        if bitset(data, 12) {
             self.set_flags_nzcv(result, carry, overflow);
         }
+    }
+
+    fn n_stm(&mut self, data: u32) {
+        // A7.7.159
+        let rn = data >> 8;
+        let registers = data;
+        let mut address = self.read_reg(rn);
+        for i in 0..=7u32 {
+            if bitset(registers, i) {
+                self.memory.write_word(address, self.read_reg(i)).unwrap();
+                address += 4;
+            }
+        }
+        self.write_reg(rn, address);
     }
 
     fn w_stm(&mut self, data: u32, extra: u32) {
@@ -1382,9 +1402,17 @@ impl Board {
         }
     }
 
-    fn sub_reg(&mut self, rd: u8, rm: u8, rn: u8, shift: Shift, setflags: bool) {
+    fn w_sub_reg(&mut self, data: u32, extra: u32) {
         // A7.7.172
-        let shifted = self.get_shifted_register(rm, shift);
+        let rd = data & 0xF;
+        let rn = (data >> 4) & 0xF;
+        let rm = (data >> 8) & 0xF;
+        let setflags = bitset(data, 12);
+
+        let shift_t = extra >> 6;
+        let shift_n = extra & 0x3F;
+
+        let shifted = self.get_shifted_register(rm, shift_t, shift_n);
         let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !shifted, 1);
         self.write_reg(rd, result);
         if setflags {
@@ -1392,7 +1420,10 @@ impl Board {
         }
     }
 
-    fn udiv(&mut self, rd: u8, rn: u8, rm: u8) {
+    fn w_udiv(&mut self, data: u32, extra: u32) {
+        let rd = data & 0xF;
+        let rn = data >> 4;
+        let rm = extra;
         let m = self.read_reg(rm);
         let result = if m == 0 {
             if /*IntegerZeroDivideTrappingEnabled*/ true {
@@ -1462,7 +1493,8 @@ fn main() {
     println!("finished init");
     let mut cont = true;
     loop {
-        cont = cont && board.cpu.read_instruction_pc() != 0x08019748;
+        cont = cont && board.samples < 48000 * 20;
+        // cont = cont && board.cpu.read_instruction_pc() != 0x08019748;
 
         if !cont {
             println!("\n{}\n", board);
@@ -1475,7 +1507,7 @@ fn main() {
 
         match board.fetch() {
             Ok((i, w)) => {
-                println!("fetched {:?} ({})", tag::get_opcode(i.0), if w { "wide" } else { "narrow" });
+                // println!("fetched {:?} ({})", tag::get_opcode(i.0), if w { "wide" } else { "narrow" });
                 match board.execute(i, w) {
                     _ => {}
                 }

@@ -109,7 +109,7 @@ fn id_data_processing(hword: u16, c: Context) -> u32 {
         }
         0b1011 => Opcode::CmnReg, // A7.7.26 T1
         0b1100 => Opcode::OrrReg, // A7.7.92 T1
-        0b1101 => Opcode::MulReg, // A7.7.84 T1
+        0b1101 => Opcode::Mul, // A7.7.84 T1
         0b1110 => Opcode::BicReg, // A7.7.16 T1
         0b1111 => Opcode::MvnReg, // A7.7.86 T1
         _ => unreachable!(),

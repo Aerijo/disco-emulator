@@ -47,7 +47,7 @@ pub enum Opcode {
     MovImm, // N: blank[5]-rd[3]-imm8[8] / W: blank[]-setflags[1]-rd[4]-spill[4] + modified[30]
     MovReg, // N: blank[7]-setflags[1]-rm[4]-rd[4] / W: blank[]-setflags[1]-rd[4] + blank[26]-rm[4]
     Movt,
-    MulReg, // N: blank[10]-rm[3]-rdn[3]
+    Mul, // N: blank[10]-rm[3]-rdn[3] / W: blank[8]-rn[4]-rd[4] + blank[26]-rm[4]
     MvnImm, // W: blank[7]-setflags[1]-rd[4]-spill[4] + modified[30]
     MvnReg, // N: blank[12]-rm[3]-rd[3]
     Nop,
@@ -68,7 +68,9 @@ pub enum Opcode {
     RsbReg,
     SbcImm, // W: blank[3]-setflags[1]-rn[4]-rd[4]-spill[4] + modified[30]
     SbcReg, // N: blank[10]-rm[3]-rdn[3]
+    Sdiv,
     Sev,
+    Smull,
     Stm,    // N: blank[5]-rt[3]-registers[8] / W: blank[12]-rn[4] + blank[13]-wback[1]-(pc)[1]-lr[1]-(sp)[1]-registers[13]
     StrImm, // N: rn[4]-rt[4]-imm8[8] / W: blank[8]-rn[4]-rt[4] + blank[15]-index[1]-wback[1]-imm13[13]
     StrReg, // N: blank[7]-rm[3]-rn[3]-rt[3]
@@ -77,7 +79,7 @@ pub enum Opcode {
     StrhImm, // N: blank[4]-rm[3]-rt[3]-imm6[6]
     StrhReg, // N: blank[7]-rm[3]-rn[3]-rt[3]
     SubImm, // N: blank[2]-rn[3]-rd[3]-imm8[8] / W: blank[3]-setflags[1]-rn[4]-rd[4]-spill[4] + modified[30]
-    SubReg, // N: blank[7]-rm[3]-rn[3]-rd[3]
+    SubReg, // N: blank[7]-rm[3]-rn[3]-rd[3] / W: blank[3]-setflags[1]-rm[4]-rn[4]-rd[4] + blank[22]-shift_t[2]-shift_n[6]
     SubSpImm, // N: blank[7]-imm9[9]
     Svc,    // N: blank[8]-imm8[8]
     Sxtb,   // N: blank[12]-rm[3]-rd[3]
@@ -87,6 +89,8 @@ pub enum Opcode {
     TstImm, // W: blank[8]-rn[4]-spill[4] + modified[30]
     TstReg, // N: blank[12]-rm[3]-rn[3]
     Udf, // N: blank[8]-imm8[8]
+    Udiv,
+    Umull,
     Uxtb,   // N: blank[12]-rm[3]-rd[3]
     Uxth,   // N: blank[12]-rm[3]-rd[3]
     Wfe,

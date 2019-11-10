@@ -146,25 +146,24 @@ pub fn asr_c(input: u32, shift: u32) -> (u32, bool) {
     return (result, carry_out);
 }
 
-pub fn shift_c(input: u32, s: Shift, carry_in: u32) -> (u32, bool) {
-    // p181
-    assert!(!(s.shift_t == ShiftType::RRX && s.shift_n != 1));
-    if s.shift_n == 0 {
+pub fn shift_c(input: u32, shift_t: u32, shift_n: u32, carry_in: u32) -> (u32, bool) {
+    // A7.4.2
+    if shift_n == 0 {
         return (input, carry_in == 1);
     }
-
-    return match s.shift_t {
-        ShiftType::LSL => lsl_c(input, s.shift_n),
-        ShiftType::LSR => lsr_c(input, s.shift_n),
-        ShiftType::ASR => asr_c(input, s.shift_n),
-        ShiftType::ROR => ror_c(input, s.shift_n),
-        ShiftType::RRX => rrx_c(input, carry_in),
+    return match shift_t {
+        0b00 => lsl_c(input, shift_n),
+        0b01 => lsr_c(input, shift_n),
+        0b10 => asr_c(input, shift_n),
+        0b11 if shift_n == 0 => rrx_c(input, carry_in),
+        0b11 if shift_n != 0 => ror_c(input, shift_n),
+        _ => unreachable!(),
     }
 }
 
-pub fn shift(input: u32, s: Shift, carry_in: u32) -> u32 {
+pub fn shift(input: u32, shift_t: u32, shift_n: u32, carry_in: u32) -> u32 {
     // p181
-    return shift_c(input, s, carry_in).0;
+    return shift_c(input, shift_t, shift_n, carry_in).0;
 }
 
 pub fn add_with_carry(x: u32, y: u32, carry_in: u32) -> (u32, bool, bool) {
