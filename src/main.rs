@@ -28,6 +28,7 @@ use goblin::elf::Elf;
 use std::thread;
 use std::sync::mpsc::{sync_channel, SyncSender};
 
+use std::hint::unreachable_unchecked;
 use std::collections::HashMap;
 use std::fmt;
 use std::fs;
@@ -301,7 +302,7 @@ impl MemoryBus {
 struct Board {
     tick: u128,
     samples: u128,
-    audio_out: SyncSender<AudioMessage>,
+    audio_out: Option<i16>,
     instruction_cache: InstructionCache,
     cpu: CPU,
     memory: MemoryBus,
@@ -315,11 +316,11 @@ struct Board {
  * IT blocks, while also being more efficient to execute in software compared to the Thumb encoding
  */
 impl Board {
-    fn new(sender: SyncSender<AudioMessage>) -> Board {
+    fn new() -> Board {
         return Board {
             tick: 0,
             samples: 0,
-            audio_out: sender,
+            audio_out: None,
             cpu: CPU::new(),
             instruction_cache: InstructionCache::new(),
             memory: MemoryBus::new(),
@@ -344,7 +345,6 @@ impl Board {
         let mut instruction = self.instruction_cache.get_cached(pc)?;
         let mut start = tag::from(instruction);
         if !tag::has_cached(start) {
-            println!("No cache - translating");
             let raw = self.memory.get_instr_word(pc)?;
             let decoded = decode_thumb(raw, InstructionContext::new(pc, ItPos::None));
             instruction = decoded.0;
@@ -406,6 +406,7 @@ impl Board {
             Opcode::SubReg => self.w_sub_reg(data, extra),
             Opcode::Udiv   => self.w_udiv(data, extra),
             _ => {
+                // unsafe { unreachable_unchecked() }
                 println!("Unimplemented wide instruction {:?} : {:#06X} + {:#010X}", opcode, data, extra);
             }
         }
@@ -437,6 +438,7 @@ impl Board {
             Opcode::StrImm => self.n_str_imm(data),
             Opcode::StrReg => self.n_str_reg(data),
             _ => {
+                // unsafe { unreachable_unchecked() }
                 println!("Unimplemented narrow instruction {:?} - {:#06X}", opcode, data);
             }
         }
@@ -473,11 +475,16 @@ impl Board {
                 "SystemInit" |
                 "__libc_init_array" |
                 "init" |
+                "audio_init" |
+                "audio_play_sample" |
                 "init_joystick" |
+                "joystick_init_all" |
+                "joystick_enable_interrupts_all" |
                 "lcd_init" |
                 "lcd_write_char" |
                 "lcd_write_string" |
                 "lcd_update_display" |
+                "maximise_clock_speed" |
                 "BSP_AUDIO_OUT_Play_Sample" => {
                     self.branch_map.insert((sym.st_value as u32) & !0b1, name.to_string());
                 }
@@ -604,18 +611,9 @@ impl Board {
             0b01 => {}
             0b10 => self.cpu.set_carry_flag(false),
             0b11 => self.cpu.set_carry_flag(true),
-            _ => unreachable!(),
+            _ => unsafe { unreachable_unchecked() },
         }
         // v unchanged
-    }
-
-    fn shift_imm(&mut self, rd: u8, rm: u8, shift: Shift, setflags: bool) {
-        // Handles LSL, LSR, ASR, etc., as their encodings (T2 at least) are all very similar
-        // let (result, carry) = self.get_shift_with_carry(rm, shift);
-        // self.write_reg(rd, result);
-        // if setflags {
-        //     self.set_flags_nzc(result, carry);
-        // }
     }
 
     fn in_it_block(&self) -> bool {
@@ -854,8 +852,8 @@ impl Board {
         let address = pc.wrapping_add(shifted_sign_extend(extra, 23, 1));
         match self.branch_map.get(&address) {
             Some(name) => {
-                if name == "BSP_AUDIO_OUT_Play_Sample" {
-                    self.audio_out.send(AudioMessage::Amplitude((self.read_reg(0u32) & 0xFFFF) as i16)).unwrap();
+                if name == "BSP_AUDIO_OUT_Play_Sample" || name == "audio_play_sample" {
+                    self.audio_out = Some((self.read_reg(0u32) & 0xFFFF) as i16);
                     self.samples += 1;
                 } else {
                     println!("Skipping branch to {}", name);
@@ -1446,6 +1444,37 @@ impl Board {
         };
         self.write_reg(rd, result);
     }
+
+    fn step(&mut self) -> Result<(), String> {
+        match self.fetch() {
+            Ok((i, w)) => {
+                // println!("fetched {:?} ({})", tag::get_opcode(i.0), if w { "wide" } else { "narrow" });
+                return self.execute(i, w);
+            }
+            Err(e) => {
+                return Err(e);
+            }
+        };
+    }
+
+    fn get_next_amplitude(&mut self) -> Option<i16> {
+        loop {
+            match self.audio_out {
+                Some(i) => {
+                    self.audio_out = None;
+                    return Some(i);
+                }
+                None => {}
+            }
+            match self.step() {
+                Ok(_) => {}
+                Err(e) => {
+                    println!("Err: {}", e);
+                    return None;
+                }
+            };
+        }
+    }
 }
 
 impl fmt::Display for Board {
@@ -1484,38 +1513,13 @@ impl fmt::Display for Board {
     }
 }
 
-fn spawn_audio(buffer: usize) -> SyncSender<AudioMessage> {
-    let (sender, receiver) = sync_channel::<AudioMessage>(buffer);
-    thread::spawn(move|| {
-        let host = cpal::default_host();
-        let event_loop = host.event_loop();
-        let device = host.default_output_device().expect("no output device available");
-
-        let mut vec = vec![];
-
-        for msg in receiver {
-            match msg {
-                AudioMessage::Amplitude(x) => {
-                    vec.push(x);
-                    // println!("recieved");
-                }
-                AudioMessage::Terminate => {
-                    println!("Received {} samples", vec.len());
-                }
-            }
-        }
-    });
-    return sender;
-}
-
 fn main() {
     println!("Welcome to ARM emulator");
-    let sender = spawn_audio(10);
 
-    let mut board = Board::new(sender);
+    let mut board = Board::new();
 
     match board.load_elf_from_path(
-        "/home/benjamin/gitlab/2300/assignments/comp2300-2019-assignment-2-part-2/.pio/build/disco_l476vg/firmware.elf",
+        "/home/benjamin/gitlab/DEMONSTRATE/comp2300-2019-assignment-2/.pio/build/disco_l476vg/firmware.elf",
     ) {
         Ok(_) => {}
         Err(s) => {
@@ -1526,34 +1530,39 @@ fn main() {
 
     println!("\n{}\n", board);
     println!("finished init");
-    let mut cont = true;
-    loop {
-        // cont = cont && board.samples < 48000 * 20;
-        cont = cont && board.cpu.read_instruction_pc() != 0x0801975a;
 
-        if !cont {
-            println!("played {} samples", board.samples);
-            board.audio_out.send(AudioMessage::Terminate).unwrap();
-            return;
-            println!("\n{}\n", board);
-            print!("press enter to continue");
-            io::stdout().flush().unwrap();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).unwrap();
-            print!("\n\n");
-        }
-
-        match board.fetch() {
-            Ok((i, w)) => {
-                // println!("fetched {:?} ({})", tag::get_opcode(i.0), if w { "wide" } else { "narrow" });
-                match board.execute(i, w) {
-                    _ => {}
-                }
-            }
-            Err(e) => {
-                println!("Err: {}", e);
+    let host = cpal::default_host();
+    let device = host.default_output_device().expect("failed to find a default output device");
+    let mut format = device.default_input_format().unwrap();
+    format.data_type = cpal::SampleFormat::I16;
+    format.sample_rate = cpal::SampleRate(48000);
+    let event_loop = host.event_loop();
+    let stream_id = event_loop.build_output_stream(&device, &format).unwrap();
+    event_loop.play_stream(stream_id.clone()).unwrap();
+    event_loop.run(move |id, result| {
+        let data = match result {
+            Ok(data) => data,
+            Err(err) => {
+                eprintln!("an error occurred on stream {:?}: {}", id, err);
                 return;
             }
         };
-    }
+        match data {
+            cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::I16(mut buffer) } => {
+                for sample in buffer.chunks_mut(format.channels as usize) {
+                    let value = board.get_next_amplitude();
+                    match value {
+                        Some(i) => {
+                            for out in sample.iter_mut() {
+                                *out = i;
+                            }
+                        }
+                        _ => panic!(),
+                    }
+                }
+            },
+            _ => panic!(),
+        }
+        let next = board.get_next_amplitude();
+    });
 }
