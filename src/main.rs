@@ -437,6 +437,7 @@ impl Board {
             Opcode::Stm    => self.n_stm(data),
             Opcode::StrImm => self.n_str_imm(data),
             Opcode::StrReg => self.n_str_reg(data),
+            Opcode::SubImm => self.n_sub_imm(data),
             _ => {
                 // unsafe { unreachable_unchecked() }
                 println!("Unimplemented narrow instruction {:?} - {:#06X}", opcode, data);
@@ -1396,6 +1397,17 @@ impl Board {
         let rm = data >> 6;
         let address = self.read_reg(rn).wrapping_add(self.read_reg(rm));
         self.memory.write_mem_u(address, 4, self.read_reg(rt)).unwrap();
+    }
+
+    fn n_sub_imm(&mut self, data: u32) {
+        let imm32 = data & 0xFF;
+        let rd = (data >> 8) & 0x7;
+        let rn = data >> 11;
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !imm32, 1);
+        self.write_reg(rd, result);
+        if !self.in_it_block() {
+            self.set_flags_nzcv(result, carry, overflow);
+        }
     }
 
     fn w_sub_imm(&mut self, data: u32, extra: u32) {
