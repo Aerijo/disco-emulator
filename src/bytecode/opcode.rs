@@ -47,7 +47,7 @@ pub enum Opcode {
     MovImm, // N: blank[5]-rd[3]-imm8[8] / W: blank[]-setflags[1]-rd[4]-spill[4] + modified[30]
     MovReg, // N: blank[7]-setflags[1]-rm[4]-rd[4] / W: blank[]-setflags[1]-rd[4] + blank[26]-rm[4]
     Movt,
-    Mul, // N: blank[10]-rm[3]-rdn[3] / W: blank[8]-rn[4]-rd[4] + blank[26]-rm[4]
+    Mul,    // N: blank[10]-rm[3]-rdn[3] / W: blank[8]-rn[4]-rd[4] + blank[26]-rm[4]
     MvnImm, // W: blank[7]-setflags[1]-rd[4]-spill[4] + modified[30]
     MvnReg, // N: blank[12]-rm[3]-rd[3]
     Nop,
@@ -88,7 +88,7 @@ pub enum Opcode {
     TeqReg,
     TstImm, // W: blank[8]-rn[4]-spill[4] + modified[30]
     TstReg, // N: blank[12]-rm[3]-rn[3]
-    Udf, // N: blank[8]-imm8[8]
+    Udf,    // N: blank[8]-imm8[8]
     Udiv,
     Umull,
     Uxtb,   // N: blank[12]-rm[3]-rd[3]

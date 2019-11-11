@@ -9,7 +9,7 @@ extern crate cpal;
 use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait};
 
 mod instruction;
-use instruction::{CarryChange, Condition, Instruction, ShiftType};
+use instruction::{CarryChange, Instruction, ShiftType};
 
 mod peripherals;
 use peripherals::Peripherals;
@@ -24,9 +24,6 @@ mod utils;
 use utils::bits::{bitset, add_with_carry, shift, shift_c, align, word_align, sign_extend, shifted_sign_extend};
 
 use goblin::elf::Elf;
-
-use std::thread;
-use std::sync::mpsc::{sync_channel, SyncSender};
 
 use std::hint::unreachable_unchecked;
 use std::collections::HashMap;
@@ -70,15 +67,95 @@ enum AccessType {
 }
 
 #[derive(Debug)]
-enum AudioMessage {
-    Amplitude(i16),
-    Terminate,
-}
-
-#[derive(Debug)]
 pub struct Shift {
     shift_t: ShiftType,
     shift_n: u32,
+}
+
+// NOTE: condition checking is defined in A7.3.1 p178
+#[derive(Copy, Clone, Debug)]
+pub enum Condition {
+    Equal = 0b0000,
+    NotEqual = 0b0001,
+    CarrySet = 0b0010,
+    CarryClear = 0b0011,
+    Negative = 0b0100,
+    PosOrZero = 0b0101,
+    Overflow = 0b0110,
+    NotOverflow = 0b0111,
+    UHigher = 0b1000,
+    ULowerSame = 0b1001,
+    SHigherSame = 0b1010,
+    Slower = 0b1011,
+    SHigher = 0b1100,
+    SLowerSame = 0b1101,
+    Always = 0b1110,
+    Never = 0b1111,
+}
+
+impl Condition {
+    pub fn new<T: Into<u32>>(code: T) -> Condition {
+        let code = code.into();
+        assert!(code <= 0xF);
+        return match code {
+            0b0000 => Condition::Equal,
+            0b0001 => Condition::NotEqual,
+            0b0010 => Condition::CarrySet,
+            0b0011 => Condition::CarryClear,
+            0b0100 => Condition::Negative,
+            0b0101 => Condition::PosOrZero,
+            0b0110 => Condition::Overflow,
+            0b0111 => Condition::NotOverflow,
+            0b1000 => Condition::UHigher,
+            0b1001 => Condition::ULowerSame,
+            0b1010 => Condition::SHigherSame,
+            0b1011 => Condition::Slower,
+            0b1100 => Condition::SHigher,
+            0b1101 => Condition::SLowerSame,
+            0b1110 => Condition::Always,
+            0b1111 => Condition::Never,
+            _ => panic!(),
+        };
+    }
+}
+
+#[derive(Debug)]
+pub struct ItState {
+    state: u32,
+}
+
+impl ItState {
+    fn new() -> ItState {
+        return ItState {
+            state: 0,
+        };
+    }
+
+    fn active(&self) -> bool {
+        return self.state != 0;
+    }
+
+    fn advance(&mut self) {
+        if (self.state & 0b111) == 0 {
+            self.state = 0;
+        } else {
+            self.state = self.state & (0b111 << 5) | (self.state & 0x1F) << 1;
+        }
+    }
+
+    fn condition(&self) -> Condition {
+        return Condition::new(self.state >> 4);
+    }
+
+    fn position(&self) -> ItPos {
+        return if self.state == 0 {
+            ItPos::None
+        } else if (self.state & 0b111) == 0 {
+            ItPos::Last
+        } else {
+            ItPos::Within
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -308,6 +385,7 @@ struct Board {
     memory: MemoryBus,
     register_formats: [RegFormat; 16],
     branch_map: HashMap<u32, String>,
+    itstate: ItState
 }
 
 /**
@@ -326,6 +404,7 @@ impl Board {
             memory: MemoryBus::new(),
             register_formats: [RegFormat::Hex; 16],
             branch_map: HashMap::new(),
+            itstate: ItState::new(),
         };
     }
 
@@ -346,7 +425,7 @@ impl Board {
         let mut start = tag::from(instruction);
         if !tag::has_cached(start) {
             let raw = self.memory.get_instr_word(pc)?;
-            let decoded = decode_thumb(raw, InstructionContext::new(pc, ItPos::None));
+            let decoded = decode_thumb(raw, InstructionContext::new(pc, self.itstate.position()));
             instruction = decoded.0;
             start = tag::from(instruction);
             if decoded.1 {
@@ -381,6 +460,15 @@ impl Board {
         let opcode = tag::get_opcode(instr.0);
         let data = instr.0 & 0xFFFF;
         let extra = instr.1 & !(0b11 << 30);
+
+        if self.itstate.active() {
+            let execute = self.cpu.check_condition(self.itstate.condition());
+            self.itstate.advance();
+            if !execute {
+                return Ok(());
+            }
+        }
+
         return if wide {
             self.execute_wide(opcode, data, extra)
         } else {
@@ -618,7 +706,7 @@ impl Board {
     }
 
     fn in_it_block(&self) -> bool {
-        return false;
+        return self.itstate.active();
     }
 
     /**

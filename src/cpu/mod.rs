@@ -1,10 +1,10 @@
 use std::fmt;
 
-use crate::RegFormat;
+use crate::{RegFormat, Condition};
 use crate::peripherals::Peripheral;
 use crate::utils::io::read_register;
 use crate::utils::bits::{bitset, add_with_carry, shift, shift_c, align};
-use crate::instruction::{CarryChange, Condition, Instruction, ShiftType};
+use crate::instruction::{CarryChange, Instruction, ShiftType};
 
 
 #[derive(Debug)]
