@@ -27,17 +27,12 @@ use goblin::elf::Elf;
 
 use std::thread;
 use std::sync::{Mutex, mpsc::{SyncSender, sync_channel}};
-
+use std::env;
 use std::hint::unreachable_unchecked;
 use std::collections::HashMap;
-use std::fmt;
-use std::fs;
+use std::{fmt, fs, string::String, option::Option};
 use std::io::{self, Write};
 use std::num::Wrapping;
-use std::option::Option;
-use std::string::String;
-use std::time::SystemTime;
-use std::vec::Vec;
 
 pub type ByteInstruction = (u32, u32); // Intermediate bytecode format for more efficient decode and execution
 
@@ -1665,8 +1660,16 @@ fn audio() -> SyncSender<i16> {
 fn main() {
     println!("Welcome to ARM emulator");
 
+    let args: Vec<String> = env::args().collect();
+    let path = if args.len() < 2 {
+        println!("Path to ELF executable required as first argument");
+        return;
+    } else {
+        &args[1]
+    };
+
     let mut board = Board::new();
-    board.load_elf_from_path("/home/benjamin/gitlab/DEMONSTRATE/comp2300-2019-assignment-2/.pio/build/disco_l476vg/firmware.elf").unwrap();
+    board.load_elf_from_path(path).unwrap();
     println!("\n{}\n", board);
     println!("finished init");
     board.aquire_audio(audio());
