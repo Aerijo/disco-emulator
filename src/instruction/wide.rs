@@ -1,6 +1,6 @@
-use crate::instruction::{Instruction, ShiftType, Condition, CarryChange};
+use crate::instruction::{Instruction, ShiftType, CarryChange};
 use crate::utils::bits::{bitset, thumb_expand_imm_c, thumb_expand_imm, matches, word_align, sign_extend, decode_imm_shift};
-use crate::Shift;
+use crate::{Condition, Shift};
 
 pub fn get_wide_instruction(word: u32, pc: u32) -> Instruction {
     // A5.3

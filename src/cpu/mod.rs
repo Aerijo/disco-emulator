@@ -1,10 +1,10 @@
 use std::fmt;
 
-use crate::RegFormat;
+use crate::{RegFormat, Condition};
 use crate::peripherals::Peripheral;
 use crate::utils::io::read_register;
 use crate::utils::bits::{bitset, add_with_carry, shift, shift_c, align};
-use crate::instruction::{CarryChange, Condition, Instruction, ShiftType};
+use crate::instruction::{CarryChange, Instruction, ShiftType};
 
 
 #[derive(Debug)]
@@ -29,10 +29,31 @@ impl fmt::Display for APSR {
     }
 }
 
+impl APSR {
+    fn new() -> APSR {
+        return APSR {
+            n: false,
+            z: true,
+            c: true,
+            v: false,
+            q: false,
+            ge: 0,
+        };
+    }
+}
+
 #[derive(Debug)]
 struct IPSR {
     // B1.4.2
     exception: u32,
+}
+
+impl IPSR {
+    fn new() -> IPSR {
+        return IPSR {
+            exception: 0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -42,46 +63,130 @@ struct EPSR {
     t: bool, // thumb mode
 }
 
+impl EPSR {
+    fn new() -> EPSR {
+        return EPSR {
+            it_ici: 0,
+            t: true,
+        };
+    }
+}
+
+#[derive(Debug)]
+struct Control {
+    spsel: bool,
+    n_priv: bool,
+    fpca: bool,
+}
+
+impl Control {
+    fn new() -> Control {
+        return Control {
+            spsel: false,
+            n_priv: false,
+            fpca: false,
+        };
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ExecMode {
+    // B1.4.7 p521
+    ModeThread,
+    ModeHandler,
+}
+
 #[derive(Debug)]
 pub struct CPU {
     registers: [u32; 16],
+    instr_pc: u32,
+    sp_unpredictable: bool,
+    sp_main: u32,
+    sp_process: u32,
     apsr: APSR,
     ipsr: IPSR,
     epsr: EPSR,
+    control: Control,
+    pub current_mode: ExecMode,
 }
 
 impl CPU {
     pub fn new() -> CPU {
         return CPU {
-            registers: [0; 16],
-            apsr: APSR {
-                n: false,
-                z: true,
-                c: true,
-                v: false,
-                q: false,
-                ge: 0,
-            },
-            ipsr: IPSR {
-                exception: 0,
-            },
-            epsr: EPSR {
-                it_ici: 0,
-                t: true,
-            }
+            registers: [0xABCDABCD; 16],
+            instr_pc: 0,
+            sp_unpredictable: false, // TODO: Ensure this value is maintained
+            sp_main: 0,
+            sp_process: 0,
+            apsr: APSR::new(),
+            ipsr: IPSR::new(),
+            epsr: EPSR::new(),
+            control: Control::new(),
+            current_mode: ExecMode::ModeThread,
         };
     }
 
-    pub fn read_reg(&self, reg: u8) -> u32 {
-        // This is a "true" assertion, as registers come
-        // from the machine code, so should never be out of range.
+    pub fn read_reg(&self, reg: u32) -> u32 {
         assert!(reg <= 15);
-        return self.registers[reg as usize];
+        return match reg {
+            13 => self.read_sp(),
+            15 => self.read_pc(),
+            _ => self.registers[reg as usize],
+        }
     }
 
-    pub fn write_reg(&mut self, reg: u8, val: u32) {
+    fn raise_unpredictable(&self) {
+        println!("Unpredictable SP access");
+    }
+
+    pub fn read_sp(&self) -> u32 {
+        if self.sp_unpredictable {
+            self.raise_unpredictable();
+            return 0;
+        }
+        return self.registers[13] & !0b11;
+    }
+
+    pub fn read_pc(&self) -> u32 {
+        return self.registers[15];
+    }
+
+    pub fn read_lr(&self) -> u32 {
+        return self.registers[14];
+    }
+
+    pub fn write_lr(&mut self, value: u32) {
+        self.registers[14] = value;
+    }
+
+    pub fn read_instruction_pc(&self) -> u32 {
+        return self.instr_pc;
+    }
+
+    pub fn write_instruction_pc(&mut self, address: u32) {
+        self.instr_pc = address;
+    }
+
+    pub fn read_aligned_pc(&self) -> u32 {
+        return self.read_pc() & !0b11;
+    }
+
+    pub fn inc_pc(&mut self, wide: bool) {
+        self.instr_pc += if wide { 4 } else { 2 };
+    }
+
+    pub fn update_instruction_address(&mut self) -> u32 {
+        self.registers[15] = self.instr_pc + 4;
+        return self.instr_pc;
+    }
+
+    pub fn write_reg(&mut self, reg: u32, val: u32) {
         assert!(reg <= 15);
         self.registers[reg as usize] = val;
+    }
+
+    pub fn write_sp(&mut self, val: u32) {
+        self.registers[13] = val & !0b11;
     }
 
     pub fn check_condition(&self, cond: Condition) -> bool {
@@ -101,6 +206,7 @@ impl CPU {
             Condition::SHigher => !self.apsr.z && (self.apsr.n == self.apsr.v),
             Condition::SLowerSame => self.apsr.z || (self.apsr.n != self.apsr.v),
             Condition::Always => true,
+            Condition::Never => false,
         };
     }
 
@@ -118,6 +224,10 @@ impl CPU {
 
     pub fn read_carry_flag(&self) -> bool {
         return self.apsr.c;
+    }
+
+    pub fn carry(&self) -> u32 {
+        return self.read_carry_flag() as u32;
     }
 
     pub fn set_overflow_flag(&mut self, enabled: bool) {
@@ -159,7 +269,10 @@ impl fmt::Display for CPU {
         registers.push('\n');
         for i in 4..8 {
             let left = self.read_reg(i);
-            let right = self.read_reg(i + 8);
+            let right = match i + 8 {
+                15 => self.read_instruction_pc(),
+                _ => self.read_reg(i + 8),
+            };
             let special = ["r12", "sp", "lr", "pc"];
             let left_label = format!("r{}", i);
 

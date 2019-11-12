@@ -1,10 +1,9 @@
 [package]
-name = "arm-simulator"
+name = "arm-emulator"
 version = "0.1.0"
 authors = ["Benjamin Gray <bengray178@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-regex = "1"
-lazy_static = "1"
 goblin = "0.0.22" # ELF parsing
+cpal = "0.10.0" # sound

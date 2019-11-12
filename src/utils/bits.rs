@@ -38,9 +38,19 @@ pub fn word_align(address: u32) -> u32 {
     return align(address, 4);
 }
 
-pub fn sign_extend(value: u32, bits: u32) -> i32 {
-    assert!(bits < 32);
-    return ((value << (31 - bits)) as i32) >> (31 - bits);
+pub fn sign_extend(num: u32, bits: u32) -> u32 {
+    return shifted_sign_extend(num, bits, 0);
+}
+
+/**
+ * Sign extends the number value[0:bits], and shifts it left by shift.
+ * Guarantees that only the _bits_ lowest bits are maintained, and higher
+ * bits are cleared (pre shift). Therefore, it is safe to use directly in
+ * an encoding such as foo[8]-offset[8]
+ */
+pub fn shifted_sign_extend(value: u32, bits: u32, shift: u32) -> u32 {
+    assert!(bits < 32 && shift < 32);
+    return (((value << (31 - bits)) as i32) >> (31 - bits - shift)) as u32;
 }
 
 // The pseudocode definition takes the current carry flag state
@@ -77,7 +87,7 @@ pub fn thumb_expand_imm_c(input: u32) -> (u32, CarryChange) {
 pub fn rotate_right_32_c(input: u32, shift: u32) -> (u32, CarryChange) {
     // p27
     assert!(shift != 0);
-    let result = input.rotate_right(shift);
+    let result = input.rotate_right(shift % 32);
     let carry_out = if bitset(result, 31) {
         CarryChange::Set
     } else {
@@ -136,25 +146,24 @@ pub fn asr_c(input: u32, shift: u32) -> (u32, bool) {
     return (result, carry_out);
 }
 
-pub fn shift_c(input: u32, s: Shift, carry_in: u32) -> (u32, bool) {
-    // p181
-    assert!(!(s.shift_t == ShiftType::RRX && s.shift_n != 1));
-    if s.shift_n == 0 {
+pub fn shift_c(input: u32, shift_t: u32, shift_n: u32, carry_in: u32) -> (u32, bool) {
+    // A7.4.2
+    if shift_n == 0 {
         return (input, carry_in == 1);
     }
-
-    return match s.shift_t {
-        ShiftType::LSL => lsl_c(input, s.shift_n),
-        ShiftType::LSR => lsr_c(input, s.shift_n),
-        ShiftType::ASR => asr_c(input, s.shift_n),
-        ShiftType::ROR => ror_c(input, s.shift_n),
-        ShiftType::RRX => rrx_c(input, carry_in),
+    return match shift_t {
+        0b00 => lsl_c(input, shift_n),
+        0b01 => lsr_c(input, shift_n),
+        0b10 => asr_c(input, shift_n),
+        0b11 if shift_n == 0 => rrx_c(input, carry_in),
+        0b11 if shift_n != 0 => ror_c(input, shift_n),
+        _ => unreachable!(),
     }
 }
 
-pub fn shift(input: u32, s: Shift, carry_in: u32) -> u32 {
+pub fn shift(input: u32, shift_t: u32, shift_n: u32, carry_in: u32) -> u32 {
     // p181
-    return shift_c(input, s, carry_in).0;
+    return shift_c(input, shift_t, shift_n, carry_in).0;
 }
 
 pub fn add_with_carry(x: u32, y: u32, carry_in: u32) -> (u32, bool, bool) {
@@ -169,4 +178,12 @@ pub fn add_with_carry(x: u32, y: u32, carry_in: u32) -> (u32, bool, bool) {
     let overflow = (x_neg == y_neg) && (x_neg != result_neg);
 
     return (result as u32, carry_out, overflow);
+}
+
+pub fn extract_value(raw: u32, start: u32, size: u32) -> u32 {
+    return (raw >> start) & (!0 >> (32 - size));
+}
+
+pub fn is_wide_thumb(word: u32) -> bool {
+    return ((word >> 29) == 0b111) && ((word >> 27) != 0b11100);
 }

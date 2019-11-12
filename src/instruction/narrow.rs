@@ -1,6 +1,6 @@
-use crate::instruction::{Instruction, ShiftType, Condition, CarryChange};
+use crate::instruction::{Instruction, ShiftType, CarryChange};
 use crate::utils::bits::{bitset, matches, word_align, sign_extend};
-use crate::Shift;
+use crate::{Condition, Shift};
 
 pub fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
     // A5.2
@@ -292,13 +292,13 @@ fn id_if_then_hints(hword: u16) -> Instruction {
         Instruction::It {firstcond: op_a as u8, mask: op_b as u8} // A7.7.38 T1
     } else {
         match op_a {
-           0b0000 => Instruction::Nop, // A7.7.88 T1
-           0b0001 => Instruction::Yield, // A7.7.263 T1
-           0b0010 => Instruction::Wfe, // A7.7.261 T1
-           0b0011 => Instruction::Wfi, // A7.7.262 T1
-           0b0100 => Instruction::Sev, // A7.7.129 T1
-           _ => Instruction::Nop,
-       }
+            0b0000 => Instruction::Nop, // A7.7.88 T1
+            0b0001 => Instruction::Yield, // A7.7.263 T1
+            0b0010 => Instruction::Wfe, // A7.7.261 T1
+            0b0011 => Instruction::Wfi, // A7.7.262 T1
+            0b0100 => Instruction::Sev, // A7.7.129 T1
+            _ => Instruction::Nop,
+        }
     }
 }
 
@@ -312,7 +312,7 @@ fn id_conditional_branch_supc(hword: u16, pc: u32) -> Instruction {
         _ => {
             let imm32 = sign_extend(((hword & 0xFF) << 1) as u32, 8) as u32;
             let address = pc.wrapping_add(imm32);
-            let cond = Condition::from((hword >> 8) & 0b1111);
+            let cond = Condition::new(((hword >> 8) & 0b1111) as u32);
             Instruction::CondBranch { address, cond } // A7.7.12 T1
         }
     };

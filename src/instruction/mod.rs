@@ -1,58 +1,14 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-use crate::Shift;
-use crate::utils::bits::{bitset};
+use crate::{Condition, Shift};
+use crate::utils::bits::{bitset, is_wide_thumb};
 
 mod narrow;
 use narrow::{get_narrow_instruction};
 
 mod wide;
 use wide::{get_wide_instruction};
-
-#[derive(Copy, Clone, Debug)]
-pub enum Condition {
-    Equal = 0b0000,
-    NotEqual = 0b0001,
-    CarrySet = 0b0010,
-    CarryClear = 0b0011,
-    Negative = 0b0100,
-    PosOrZero = 0b0101,
-    Overflow = 0b0110,
-    NotOverflow = 0b0111,
-    UHigher = 0b1000,
-    ULowerSame = 0b1001,
-    SHigherSame = 0b1010,
-    Slower = 0b1011,
-    SHigher = 0b1100,
-    SLowerSame = 0b1101,
-    Always = 0b1110,
-}
-
-impl Condition {
-    fn from<T: Into<u32>>(code: T) -> Condition {
-        let code = code.into();
-        assert!(code <= 0b1110);
-        return match code {
-            0b0000 => Condition::Equal,
-            0b0001 => Condition::NotEqual,
-            0b0010 => Condition::CarrySet,
-            0b0011 => Condition::CarryClear,
-            0b0100 => Condition::Negative,
-            0b0101 => Condition::PosOrZero,
-            0b0110 => Condition::Overflow,
-            0b0111 => Condition::NotOverflow,
-            0b1000 => Condition::UHigher,
-            0b1001 => Condition::ULowerSame,
-            0b1010 => Condition::SHigherSame,
-            0b1011 => Condition::Slower,
-            0b1100 => Condition::SHigher,
-            0b1101 => Condition::SLowerSame,
-            0b1110 => Condition::Always,
-            _ => panic!(),
-        };
-    }
-}
 
 #[derive(Copy, Clone, Debug)]
 pub enum CarryChange {
@@ -189,7 +145,7 @@ pub enum Instruction {
 
 impl Instruction {
     pub fn from(word: u32, pc: u32) -> (Instruction, bool) {
-        return if (word >> 29 == 0b111) && (word >> 27 != 0b11100) {
+        return if is_wide_thumb(word) {
             (get_wide_instruction(word, pc), true)
         } else {
             (get_narrow_instruction((word >> 16) as u16, pc), false)
