@@ -164,8 +164,8 @@ pub enum Location {
 }
 
 struct MemoryBus {
-    flash: [u8; 1024 * 1024],
-    data: [u8; 128 * 1024],
+    flash: Box<[u8; 1024 * 1024]>,
+    data: Box<[u8; 128 * 1024]>,
     peripherals: Peripherals
 }
 
@@ -197,8 +197,8 @@ fn write_value(mut value: u32, bank: &mut[u8], base: usize, size: usize) -> Resu
 impl MemoryBus {
     fn new() -> MemoryBus {
         return MemoryBus {
-            flash: [0xFF; 1024 * 1024],
-            data: [0xFF; 128 * 1024],
+            flash: Box::new([0xFF; 1024 * 1024]),
+            data: Box::new([0xFF; 128 * 1024]),
             peripherals: Peripherals::new(),
         };
     }
@@ -284,8 +284,8 @@ impl MemoryBus {
         // let memaddrdesc = validate_address(address, access_type, false); // TODO
         let location = self.address_to_physical(address)?;
         return match location {
-            Location::Flash(i) => read_value(&self.flash, i, size),
-            Location::Ram(i) => read_value(&self.data, i, size),
+            Location::Flash(i) => read_value(&*self.flash, i, size),
+            Location::Ram(i) => read_value(&*self.data, i, size),
             Location::Peripheral(i) => self.peripherals.read(i, size),
         };
     }
@@ -347,7 +347,7 @@ impl MemoryBus {
         return match location {
             Location::Flash(_) => Err(String::from("Cannot write to Flash memory")),
             Location::Ram(i) => {
-                let r = write_value(value, &mut self.data, i, size);
+                let r = write_value(value, &mut *self.data, i, size);
                 self.print_mem_area(address);
                 r
             }
