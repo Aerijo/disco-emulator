@@ -28,6 +28,8 @@ use goblin::elf::Elf;
 use std::thread;
 use std::sync::{Mutex, mpsc::{SyncSender, sync_channel}};
 use std::env;
+use std::path::{PathBuf, Path};
+use std::ffi::{OsString};
 use std::hint::unreachable_unchecked;
 use std::collections::HashMap;
 use std::{fmt, fs, string::String, option::Option};
@@ -1677,8 +1679,7 @@ fn locate_elf_file() -> Option<std::path::PathBuf> {
     }
 }
 
-use std::path::{PathBuf, Path};
-use std::ffi::{OsString};
+
 
 fn main() {
     let path = match locate_elf_file() {
