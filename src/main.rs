@@ -4,15 +4,15 @@
 
 #[macro_use]
 extern crate goblin;
-extern crate cpal;
-
-use cpal::traits::{DeviceTrait, EventLoopTrait, HostTrait};
 
 mod instruction;
 use instruction::{CarryChange, Instruction, ShiftType};
 
 mod peripherals;
 use peripherals::Peripherals;
+
+mod audio;
+use audio::{AudioHandler};
 
 mod bytecode;
 use bytecode::{InstructionCache, ItPos, InstructionContext, decode_thumb, tag, opcode::{Opcode}};
@@ -25,8 +25,6 @@ use utils::bits::{bitset, add_with_carry, shift, shift_c, align, word_align, sig
 
 use goblin::elf::Elf;
 
-use std::thread;
-use std::sync::{Mutex, mpsc::{SyncSender, sync_channel}};
 use std::env;
 use std::path::{PathBuf, Path};
 use std::ffi::{OsString};
@@ -363,33 +361,8 @@ impl MemoryBus {
 }
 
 #[derive(Debug)]
-struct AudioHandler {
-    sender: Option<SyncSender<i16>>,
-}
-
-impl AudioHandler {
-    fn new() -> AudioHandler {
-        return AudioHandler {
-            sender: None,
-        };
-    }
-
-    fn aquire(&mut self, rt: SyncSender<i16>) {
-        self.sender = Some(rt);
-    }
-
-    fn handle(&mut self, amplitude: i16) {
-        match &self.sender {
-            Some(rt) => { rt.send(amplitude).unwrap() },
-            None => {},
-        }
-    }
-}
-
-#[derive(Debug)]
 struct Board {
     tick: u128,
-    samples: u128,
     audio_handler: AudioHandler,
     instruction_cache: InstructionCache,
     cpu: CPU,
@@ -408,7 +381,6 @@ impl Board {
     fn new() -> Board {
         return Board {
             tick: 0,
-            samples: 0,
             audio_handler: AudioHandler::new(),
             cpu: CPU::new(),
             instruction_cache: InstructionCache::new(),
@@ -954,7 +926,6 @@ impl Board {
             Some(name) => {
                 if name == "BSP_AUDIO_OUT_Play_Sample" || name == "audio_play_sample" {
                     self.audio_handler.handle((self.read_reg(0u32) & 0xFFFF) as i16);
-                    self.samples += 1;
                 } else {
                     println!("Skipping branch to {}", name);
                 }
@@ -1567,8 +1538,8 @@ impl Board {
         };
     }
 
-    fn aquire_audio(&mut self, sender: SyncSender<i16>) {
-        self.audio_handler.aquire(sender);
+    fn spawn_audio(&mut self) {
+        self.audio_handler.spawn_audio();
     }
 }
 
@@ -1608,43 +1579,6 @@ impl fmt::Display for Board {
     }
 }
 
-fn audio() -> SyncSender<i16> {
-    let (tx, rx) = sync_channel::<i16>(6);
-    let rx = Mutex::new(rx);
-    thread::spawn(move || {
-        let host = cpal::default_host();
-        let device = host.default_output_device().expect("failed to find a default output device");
-        let mut format = device.default_input_format().unwrap();
-        format.data_type = cpal::SampleFormat::I16;
-        format.sample_rate = cpal::SampleRate(48000);
-        let event_loop = host.event_loop();
-        let stream_id = event_loop.build_output_stream(&device, &format).unwrap();
-        event_loop.play_stream(stream_id.clone()).unwrap();
-        event_loop.run(move |id, result| {
-            let data = match result {
-                Ok(data) => data,
-                Err(err) => {
-                    eprintln!("an error occurred on stream {:?}: {}", id, err);
-                    return;
-                }
-            };
-            match data {
-                cpal::StreamData::Output { buffer: cpal::UnknownTypeOutputBuffer::I16(mut buffer) } => {
-                    let rx = rx.lock().unwrap();
-                    for sample in buffer.chunks_mut(format.channels as usize) {
-                        let value = rx.recv().unwrap();
-                        for out in sample.iter_mut() {
-                            *out = value;
-                        }
-                    }
-                },
-                _ => panic!(),
-            }
-        });
-    });
-    return tx;
-}
-
 fn locate_elf_file() -> Option<std::path::PathBuf> {
     let args: Vec<OsString> = env::args_os().collect();
     if args.len() >= 2 {
@@ -1679,8 +1613,6 @@ fn locate_elf_file() -> Option<std::path::PathBuf> {
     }
 }
 
-
-
 fn main() {
     let path = match locate_elf_file() {
         Some(p) => p,
@@ -1694,7 +1626,7 @@ fn main() {
     board.load_elf_from_path(&path).unwrap();
     println!("\n{}\n", board);
     println!("finished init");
-    board.aquire_audio(audio());
+    board.spawn_audio();
 
     loop {
         board.step().unwrap();
