@@ -175,19 +175,6 @@ impl fmt::Debug for MemoryBus {
     }
 }
 
-fn iter_print(data: &[u8], start_index: usize, amount: usize) {
-    let mut c = 16;
-    for i in start_index..(start_index + amount) {
-        if c == 0 {
-            c = 16;
-            print!("\n");
-        }
-        c -= 1;
-        print!("{:02X} ", data[i]);
-    }
-    print!("\n");
-}
-
 fn read_value(bank: &[u8], base: usize, size: usize) -> Result<u32, String> {
     assert!(size == 1 || size == 2 || size == 4);
     let mut result: u32 = 0;
@@ -560,18 +547,18 @@ impl Board {
     /**
      * Takes a path to an ELF file and initialises the board with its contents
      */
-    fn load_elf_from_path(&mut self, path: &str) -> Result<(), String> {
+    fn load_elf_from_path(&mut self, path: &Path) -> Result<(), String> {
         let bytes = match fs::read(path) {
             Ok(b) => b,
             Err(e) => {
-                return Err(format!("Failed to read file \"{}\": {}", path, e));
+                return Err(format!("Failed to read file \"{:?}\": {}", path, e));
             }
         };
 
         let elf = match Elf::parse(&bytes) {
             Ok(e) => e,
             Err(e) => {
-                return Err(format!("Failed to parse elf file \"{}\": {}", path, e));
+                return Err(format!("Failed to parse elf file \"{:?}\": {}", path, e));
             }
         };
 
@@ -1403,7 +1390,6 @@ impl Board {
     }
 
     fn n_pop(&mut self, data: u32) {
-        // println!("Popping {:0b}", data);
         let mut address = self.read_sp();
         for i in (0..8u32).rev() {
             if bitset(data, i) {
@@ -1657,22 +1643,58 @@ fn audio() -> SyncSender<i16> {
     return tx;
 }
 
-fn main() {
-    println!("Welcome to ARM emulator");
+fn locate_elf_file() -> Option<std::path::PathBuf> {
+    let args: Vec<OsString> = env::args_os().collect();
+    if args.len() >= 2 {
+        return Some(PathBuf::from(args[1].clone()));
+    }
 
-    let args: Vec<String> = env::args().collect();
-    let path = if args.len() < 2 {
-        println!("Path to ELF executable required as first argument");
-        return;
-    } else {
-        &args[1]
+    let mut project_kind: Option<String> = None;
+    let working = std::env::current_dir().expect("cannot find or access working directory");
+    for dir in working.read_dir().expect("cannot read working directory") {
+        match dir {
+            Ok(dir) => {
+                let file_name = dir.file_name();
+                if file_name == ".pio" || file_name == ".pioenvs" {
+                    project_kind = Some(file_name.into_string().unwrap());
+                    break;
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    return match project_kind {
+        Some(s) => {
+            let elf_path: std::path::PathBuf = if s == ".pio" {
+                [".pio", "build", "disco_l476vg", "firmware.elf"].iter().collect()
+            } else {
+                [".pioenvs", "disco_l476vg", "firmware.elf"].iter().collect()
+            };
+            Some(working.join(elf_path))
+        }
+        None => None
+    }
+}
+
+use std::path::{PathBuf, Path};
+use std::ffi::{OsString};
+
+fn main() {
+    let path = match locate_elf_file() {
+        Some(p) => p,
+        None => {
+            println!("Cannot detect ELF file");
+            return;
+        }
     };
 
     let mut board = Board::new();
-    board.load_elf_from_path(path).unwrap();
+    board.load_elf_from_path(&path).unwrap();
     println!("\n{}\n", board);
     println!("finished init");
     board.aquire_audio(audio());
+
     loop {
         board.step().unwrap();
     }
