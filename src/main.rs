@@ -137,7 +137,7 @@ impl ItState {
         if (self.state & 0b111) == 0 {
             self.state = 0;
         } else {
-            self.state = self.state & (0b111 << 5) | (self.state & 0x1F) << 1;
+            self.state = self.state & (0b111 << 5) | (self.state & 0xF) << 1;
         }
     }
 
@@ -152,6 +152,31 @@ impl ItState {
             ItPos::Last
         } else {
             ItPos::Within
+        }
+    }
+
+    fn num_remaining(&self) -> u32 {
+        for i in 0..=3 {
+            if bitset(self.state, i) {
+                return 4 - i;
+            }
+        }
+        return 0;
+    }
+}
+
+impl fmt::Display for ItState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        return match self.position() {
+            ItPos::None => {
+                write!(f, "IT: None")
+            }
+            ItPos::Within => {
+                write!(f, "IT: Within ({} remaining), Cond: {:?}", self.num_remaining(), self.condition())
+            }
+            ItPos::Last => {
+                write!(f, "IT: Last, Cond: {:?}", self.condition())
+            }
         }
     }
 }
@@ -403,7 +428,6 @@ impl Board {
      */
     fn fetch(&mut self) -> Result<(ByteInstruction, bool), String> {
         let pc = self.cpu.update_instruction_address();
-        // println!("Fetching from {:#010X}", pc);
         let mut instruction = self.instruction_cache.get_cached(pc)?;
         let mut start = tag::from(instruction);
         if !tag::has_cached(start) {
@@ -448,6 +472,7 @@ impl Board {
             let execute = self.cpu.check_condition(self.itstate.condition());
             self.itstate.advance();
             if !execute {
+                println!("IT condition failed");
                 return Ok(());
             }
         }
@@ -497,6 +522,7 @@ impl Board {
             Opcode::CmpImm => self.n_cmp_imm(data),
             Opcode::CmpReg => self.n_cmp_reg(data),
             Opcode::Cps    => self.n_cps(data),
+            Opcode::It     => self.n_it(data),
             Opcode::Ldm    => self.n_ldm(data),
             Opcode::LdrLit => self.n_ldr_lit(data),
             Opcode::LdrImm => self.n_ldr_imm(data),
@@ -1056,10 +1082,9 @@ impl Board {
         // TODO
     }
 
-    fn it(&mut self, _firstcond: u8, _mask: u8) {
+    fn n_it(&mut self, data: u32) {
         // A7.7.38
-        // TODO. Note a branch may _not_ go into an IT block, so we are free to
-        // pass the ITSTATE and do whatever when grabbing instructions. Yay.
+        self.itstate.state = data;
     }
 
     fn ldc_imm(&mut self) {
@@ -1529,7 +1554,7 @@ impl Board {
     fn step(&mut self) -> Result<(), String> {
         match self.fetch() {
             Ok((i, w)) => {
-                // println!("fetched {:?} ({})", tag::get_opcode(i.0), if w { "wide" } else { "narrow" });
+                println!("fetched {:?} ({})", tag::get_opcode(i.0), if w { "wide" } else { "narrow" });
                 return self.execute(i, w);
             }
             Err(e) => {
@@ -1574,7 +1599,7 @@ impl fmt::Display for Board {
             ));
         }
         registers.push('\n');
-        registers.push_str(&format!("{}{}\n", indent, self.cpu.get_apsr_display()));
+        registers.push_str(&format!("{}{}\n{}{}\n", indent, self.cpu.get_apsr_display(), indent, self.itstate));
         return write!(f, "CPU {{\n{}}}", registers);
     }
 }
@@ -1613,6 +1638,7 @@ fn locate_elf_file() -> Option<std::path::PathBuf> {
     }
 }
 
+use std::io::{stdin, stdout, Read};
 fn main() {
     let path = match locate_elf_file() {
         Some(p) => p,
@@ -1628,7 +1654,18 @@ fn main() {
     println!("finished init");
     board.spawn_audio();
 
+    let mut stdin = io::stdin();
+    let mut stdout = io::stdout();
+
+    while board.cpu.read_instruction_pc() != 0x080f2f60 {
+        board.step().unwrap();
+    }
+
     loop {
         board.step().unwrap();
+        println!("\n{}\n", board);
+        write!(stdout, "Press enter to continue...").unwrap();
+        stdout.flush().unwrap();
+        let _ = stdin.read(&mut [0u8]).unwrap();
     }
 }
