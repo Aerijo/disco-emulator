@@ -38,6 +38,10 @@ pub fn word_align(address: u32) -> u32 {
     return align(address, 4);
 }
 
+pub fn word_aligned(address: u32) -> bool {
+    return address == word_align(address);
+}
+
 pub fn sign_extend(num: u32, bits: u32) -> u32 {
     return shifted_sign_extend(num, bits, 0);
 }
@@ -186,4 +190,12 @@ pub fn extract_value(raw: u32, start: u32, size: u32) -> u32 {
 
 pub fn is_wide_thumb(word: u32) -> bool {
     return ((word >> 29) == 0b111) && ((word >> 27) != 0b11100);
+}
+
+fn bit_now_set(original: u32, new: u32, bit: u32) -> bool {
+    return !bitset(original, bit) & bitset(new, bit);
+}
+
+fn new_bits_set(original: u32, new: u32) -> u32 {
+    return new - (original & new);
 }

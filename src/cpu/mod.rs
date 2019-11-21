@@ -8,7 +8,7 @@ use crate::instruction::{CarryChange, Instruction, ShiftType};
 
 
 #[derive(Debug)]
-struct APSR {
+struct Apsr {
     // B1.4.2
     n: bool, // negative
     z: bool, // zero
@@ -18,20 +18,20 @@ struct APSR {
     ge: u8,
 }
 
-impl fmt::Display for APSR {
+impl fmt::Display for Apsr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let neg = if self.n { 'N' } else { '_' };
         let zero = if self.z { 'Z' } else { '_' };
         let carry = if self.c { 'C' } else { '_' };
         let over = if self.v { 'V' } else { '_' };
         let sat = if self.q { 'Q' } else { '_' };
-        return write!(f, "APSR: {}{}{}{}{}", neg, zero, carry, over, sat);
+        return write!(f, "Apsr: {}{}{}{}{}", neg, zero, carry, over, sat);
     }
 }
 
-impl APSR {
-    fn new() -> APSR {
-        return APSR {
+impl Apsr {
+    fn new() -> Apsr {
+        return Apsr {
             n: false,
             z: true,
             c: true,
@@ -43,29 +43,29 @@ impl APSR {
 }
 
 #[derive(Debug)]
-struct IPSR {
+struct Ipsr {
     // B1.4.2
     exception: u32,
 }
 
-impl IPSR {
-    fn new() -> IPSR {
-        return IPSR {
+impl Ipsr {
+    fn new() -> Ipsr {
+        return Ipsr {
             exception: 0,
         }
     }
 }
 
 #[derive(Debug)]
-struct EPSR {
+struct Epsr {
     // B1.4.2
     it_ici: u32,
     t: bool, // thumb mode
 }
 
-impl EPSR {
-    fn new() -> EPSR {
-        return EPSR {
+impl Epsr {
+    fn new() -> Epsr {
+        return Epsr {
             it_ici: 0,
             t: true,
         };
@@ -97,30 +97,30 @@ pub enum ExecMode {
 }
 
 #[derive(Debug)]
-pub struct CPU {
+pub struct CoreRegisters {
     registers: [u32; 16],
     instr_pc: u32,
     sp_unpredictable: bool,
     sp_main: u32,
     sp_process: u32,
-    apsr: APSR,
-    ipsr: IPSR,
-    epsr: EPSR,
+    apsr: Apsr,
+    ipsr: Ipsr,
+    epsr: Epsr,
     control: Control,
     pub current_mode: ExecMode,
 }
 
-impl CPU {
-    pub fn new() -> CPU {
-        return CPU {
+impl CoreRegisters {
+    pub fn new() -> CoreRegisters {
+        return CoreRegisters {
             registers: [0xABCDABCD; 16],
             instr_pc: 0,
-            sp_unpredictable: false, // TODO: Ensure this value is maintained
+            sp_unpredictable: false,
             sp_main: 0,
             sp_process: 0,
-            apsr: APSR::new(),
-            ipsr: IPSR::new(),
-            epsr: EPSR::new(),
+            apsr: Apsr::new(),
+            ipsr: Ipsr::new(),
+            epsr: Epsr::new(),
             control: Control::new(),
             current_mode: ExecMode::ModeThread,
         };
@@ -128,35 +128,36 @@ impl CPU {
 
     pub fn read_reg(&self, reg: u32) -> u32 {
         assert!(reg <= 15);
-        return match reg {
-            13 => self.read_sp(),
-            15 => self.read_pc(),
-            _ => self.registers[reg as usize],
-        }
-    }
-
-    fn raise_unpredictable(&self) {
-        println!("Unpredictable SP access");
+        return self.registers[reg as usize];
     }
 
     pub fn read_sp(&self) -> u32 {
-        if self.sp_unpredictable {
-            self.raise_unpredictable();
-            return 0;
-        }
-        return self.registers[13] & !0b11;
-    }
-
-    pub fn read_pc(&self) -> u32 {
-        return self.registers[15];
+        return self.registers[13];
     }
 
     pub fn read_lr(&self) -> u32 {
         return self.registers[14];
     }
 
-    pub fn write_lr(&mut self, value: u32) {
-        self.registers[14] = value;
+    pub fn read_pc(&self) -> u32 {
+        return self.registers[15];
+    }
+
+    pub fn write_reg(&mut self, reg: u32, val: u32) {
+        assert!(reg <= 15);
+        self.registers[reg as usize] = val;
+    }
+
+    pub fn write_sp(&mut self, val: u32) {
+        self.registers[13] = val & !0b11;
+    }
+
+    pub fn write_lr(&mut self, val: u32) {
+        self.registers[14] = val;
+    }
+
+    pub fn inc_pc(&mut self, wide: bool) {
+        self.instr_pc += if wide { 4 } else { 2 };
     }
 
     pub fn read_instruction_pc(&self) -> u32 {
@@ -171,22 +172,9 @@ impl CPU {
         return self.read_pc() & !0b11;
     }
 
-    pub fn inc_pc(&mut self, wide: bool) {
-        self.instr_pc += if wide { 4 } else { 2 };
-    }
-
     pub fn update_instruction_address(&mut self) -> u32 {
         self.registers[15] = self.instr_pc + 4;
         return self.instr_pc;
-    }
-
-    pub fn write_reg(&mut self, reg: u32, val: u32) {
-        assert!(reg <= 15);
-        self.registers[reg as usize] = val;
-    }
-
-    pub fn write_sp(&mut self, val: u32) {
-        self.registers[13] = val & !0b11;
     }
 
     pub fn check_condition(&self, cond: Condition) -> bool {
@@ -222,14 +210,6 @@ impl CPU {
         self.apsr.c = enabled;
     }
 
-    pub fn read_carry_flag(&self) -> bool {
-        return self.apsr.c;
-    }
-
-    pub fn carry(&self) -> u32 {
-        return self.read_carry_flag() as u32;
-    }
-
     pub fn set_overflow_flag(&mut self, enabled: bool) {
         self.apsr.v = enabled;
     }
@@ -242,16 +222,16 @@ impl CPU {
         self.epsr.t = enabled;
     }
 
-    pub fn read_thumb_mode(&self) -> bool {
-        return self.epsr.t;
+    pub fn get_carry_flag(&self) -> u32 {
+        return self.apsr.c as u32;
     }
 
-    pub fn get_apsr_display(&self) -> String {
-        return format!("{}", self.apsr);
+    pub fn get_thumb_mode(&self) -> bool {
+        return self.epsr.t;
     }
 }
 
-impl fmt::Display for CPU {
+impl fmt::Display for CoreRegisters {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut registers = String::new();
         let indent = "    ";
@@ -287,6 +267,86 @@ impl fmt::Display for CPU {
         }
         registers.push('\n');
         registers.push_str(&format!("{}{}\n", indent, self.apsr));
-        return write!(f, "CPU {{\n{}}}", registers);
+        return write!(f, "Core {{\n{}}}", registers);
+    }
+}
+
+impl Board {
+    fn read_reg(&self, reg: u32) -> u32 {
+        return self.core_registers.read_reg(reg);
+    }
+
+    fn read_sp(&self) -> u32 {
+        return self.core_registers.read_sp();
+    }
+
+    fn read_lr(&self) -> u32 {
+        return self.core_registers.read_lr();
+    }
+
+    fn read_pc(&self) -> u32 {
+        return self.core_registers.read_pc();
+    }
+
+    fn read_aligned_pc(&self) -> u32 {
+        return self.core_registers.read_aligned_pc();
+    }
+
+    fn read_instruction_pc(&self) -> u32 {
+        return self.core_registers.read_instruction_pc();
+    }
+
+    fn write_reg(&mut self, reg: u32, val: u32) {
+        self.core_registers.write_reg(reg, val);
+    }
+
+    fn write_sp(&mut self, val: u32) {
+        self.core_registers.write_sp(val);
+    }
+
+    fn write_lr(&mut self, val: u32) {
+        self.core_registers.write_lr(val);
+    }
+
+    fn write_pc(&mut self, val: u32) {
+        self.core_registers.write_instruction_pc(val);
+    }
+
+    fn inc_pc(&mut self, wide: bool) {
+        self.core_registers.inc_pc(wide);
+    }
+
+    fn set_flags_nz(&mut self, result: u32) {
+        self.core_registers.set_negative_flag(bitset(result, 31));
+        self.core_registers.set_zero_flag(result == 0);
+        // c unchanged
+        // v unchanged
+    }
+
+    fn set_flags_nzc(&mut self, result: u32, carry: bool) {
+        self.set_flags_nz(result);
+        self.core_registers.set_carry_flag(carry);
+        // v unchanged
+    }
+
+    fn set_flags_nzcv(&mut self, result: u32, carry: bool, overflow: bool) {
+        self.set_flags_nzc(result, carry);
+        self.core_registers.set_overflow_flag(overflow);
+    }
+
+    fn set_flags_nz_alt_c(&mut self, result: u32, spill_tag: u32) {
+        self.set_flags_nz(result);
+        match (spill_tag >> 2) & 0b11 {
+            0b00 => {}
+            0b01 => {}
+            0b10 => self.core_registers.set_carry_flag(false),
+            0b11 => self.core_registers.set_carry_flag(true),
+            _ => unsafe { unreachable_unchecked() },
+        }
+        // v unchanged
+    }
+
+    fn check_condition(&self, condition: Condition) -> bool {
+        return self.core_registers.check_condition(condition);
     }
 }

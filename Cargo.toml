@@ -6,4 +6,5 @@ edition = "2018"
 
 [dependencies]
 goblin = "0.0.22" # ELF parsing
-cpal = "0.10.0" # sound
+cpal = "0.10.0" # Playing sound
+crossterm = "0.13.3" # Terminal events
