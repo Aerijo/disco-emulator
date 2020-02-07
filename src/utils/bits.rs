@@ -1,4 +1,4 @@
-use crate::Shift;
+use crate::board::Shift;
 use crate::instruction::{ShiftType, CarryChange};
 
 pub fn bitset<T: Into<u32>>(word: T, bit: T) -> bool {

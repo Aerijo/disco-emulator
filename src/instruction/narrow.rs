@@ -1,6 +1,6 @@
 use crate::instruction::{Instruction, ShiftType, CarryChange};
 use crate::utils::bits::{bitset, matches, word_align, sign_extend};
-use crate::{Condition, Shift};
+use crate::board::{Condition, Shift};
 
 pub fn get_narrow_instruction(hword: u16, pc: u32) -> Instruction {
     // A5.2

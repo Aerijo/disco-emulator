@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-use crate::{Condition, Shift};
+use crate::board::{Condition, Shift};
 use crate::utils::bits::{bitset, is_wide_thumb};
 
 mod narrow;

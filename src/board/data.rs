@@ -1,4 +1,4 @@
-struct Data {
+pub struct Data {
     contents: Box<[u8; Data::SIZE]>,
 }
 
