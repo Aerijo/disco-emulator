@@ -21,7 +21,7 @@ mod cpu;
 use cpu::{CPU, ExecMode};
 
 mod utils;
-use utils::bits::{bitset, add_with_carry, shift, shift_c, align, word_align, sign_extend, shifted_sign_extend, asr_c, lsl_c, lsr_c};
+use utils::bits::{self, bitset, add_with_carry, shift, shift_c, align, word_align, sign_extend, shifted_sign_extend};
 
 use goblin::elf::Elf;
 
@@ -557,10 +557,28 @@ impl Board {
             Opcode::Pop    => self.n_pop(data),
             Opcode::Push   => self.n_push(data),
             Opcode::Rev    => self.n_rev(data),
+            Opcode::Rev16  => self.n_rev16(data),
+            Opcode::Revsh  => self.n_revsh(data),
+            Opcode::RorReg => self.n_ror_reg(data),
+            Opcode::RsbImm => self.n_rsb_imm(data),
+            Opcode::SbcReg => self.n_sbc_reg(data),
             Opcode::Stm    => self.n_stm(data),
             Opcode::StrImm => self.n_str_imm(data),
             Opcode::StrReg => self.n_str_reg(data),
+            Opcode::StrbImm => self.n_strb_imm(data),
+            Opcode::StrbReg => self.n_strb_reg(data),
+            Opcode::StrhImm => self.n_strh_imm(data),
+            Opcode::StrhReg => self.n_strh_reg(data),
             Opcode::SubImm => self.n_sub_imm(data),
+            Opcode::SubReg => self.n_sub_reg(data),
+            Opcode::SubSpImm => self.n_sub_sp_imm(data),
+            Opcode::Svc    => self.n_svc(data),
+            Opcode::Sxtb   => self.n_sxtb(data),
+            Opcode::Sxth   => self.n_sxth(data),
+            Opcode::TstReg => self.n_tst_reg(data),
+            Opcode::Udf    => self.n_udf(data),
+            Opcode::Uxtb   => self.n_uxtb(data),
+            Opcode::Uxth   => self.n_uxth(data),
             _ => {
                 // unsafe { unreachable_unchecked() }
                 println!("Unimplemented narrow instruction {:?} - {:#06X}", opcode, data);
@@ -924,7 +942,7 @@ impl Board {
         let rd = data & 0x7;
         let rm = (data >> 3) & 0x7;
         let shift = data >> 6;
-        let (result, carry) = asr_c(self.read_reg(rm), shift);
+        let (result, carry) = bits::asr_c(self.read_reg(rm), shift);
         self.write_reg(rd, result);
         if !self.in_it_block() {
             self.set_flags_nzc(result, carry);
@@ -936,7 +954,7 @@ impl Board {
         let rdn = data & 0x7;
         let rm = data >> 3;
         let shift = self.read_reg(rm) & 0xFF;
-        let (result, carry) = asr_c(self.read_reg(rdn), shift);
+        let (result, carry) = bits::asr_c(self.read_reg(rdn), shift);
         if !self.in_it_block() {
             self.set_flags_nzc(result, carry);
         }
@@ -1280,7 +1298,7 @@ impl Board {
         let rt = data & 0x7;
         let rn = (data >> 3) & 0x7;
         let imm5 = data >> 6;
-        let address = self.read_reg(rn) + imm5;
+        let address = self.read_reg(rn).wrapping_add(imm5);
         let loaded = self.memory.read_mem_u(address, 1).unwrap();
         self.write_reg(rt, loaded);
     }
@@ -1295,7 +1313,7 @@ impl Board {
         let rt = data & 0x7;
         let rn = (data >> 3) & 0x7;
         let rm = data >> 6;
-        let address = self.read_reg(rn) + self.read_reg(rm);
+        let address = self.read_reg(rn).wrapping_add(self.read_reg(rm));
         let loaded = self.memory.read_mem_u(address, 1).unwrap();
         self.write_reg(rt, loaded);
     }
@@ -1351,7 +1369,7 @@ impl Board {
         let imm6 = data & 0x3F;
         let rt = (data >> 6) & 0x7;
         let rn = data >> 9;
-        let address = self.read_reg(rn) + imm6;
+        let address = self.read_reg(rn).wrapping_add(imm6);
         let loaded = self.memory.read_mem_u(address, 2).unwrap();
         self.write_reg(rt, loaded);
     }
@@ -1366,7 +1384,7 @@ impl Board {
         let rt = data & 0x7;
         let rn = (data >> 3) & 0x7;
         let rm = data >> 6;
-        let address = self.read_reg(rn) + self.read_reg(rm);
+        let address = self.read_reg(rn).wrapping_add(self.read_reg(rm));
         let loaded = self.memory.read_mem_u(address, 2).unwrap();
         self.write_reg(rt, loaded);
     }
@@ -1376,7 +1394,7 @@ impl Board {
         let rt = data & 0x7;
         let rn = (data >> 3) & 0x7;
         let rm = data >> 6;
-        let address = self.read_reg(rn) + self.read_reg(rm);
+        let address = self.read_reg(rn).wrapping_add(self.read_reg(rm));
         let loaded = self.memory.read_mem_u(address, 1).unwrap();
         self.write_reg(rt, sign_extend(loaded, 7));
     }
@@ -1386,7 +1404,7 @@ impl Board {
         let rt = data & 0x7;
         let rn = (data >> 3) & 0x7;
         let rm = data >> 6;
-        let address = self.read_reg(rn) + self.read_reg(rm);
+        let address = self.read_reg(rn).wrapping_add(self.read_reg(rm));
         let loaded = self.memory.read_mem_u(address, 2).unwrap();
         self.write_reg(rt, sign_extend(loaded, 15));
     }
@@ -1396,7 +1414,7 @@ impl Board {
         let rd = data & 0x7;
         let rm = (data >> 3) & 0x7;
         let shift = data >> 6;
-        let (result, carry) = lsl_c(self.read_reg(rm), shift);
+        let (result, carry) = bits::lsl_c(self.read_reg(rm), shift);
         self.write_reg(rd, result);
         if !self.in_it_block() {
             self.set_flags_nzc(result, carry);
@@ -1423,7 +1441,7 @@ impl Board {
         let rdn = data & 0x7;
         let rm = data >> 3;
         let shift = self.read_reg(rm) & 0xFF;
-        let (result, carry) = lsl_c(self.read_reg(rdn), shift);
+        let (result, carry) = bits::lsl_c(self.read_reg(rdn), shift);
         self.write_reg(rdn, result);
         if !self.in_it_block() {
             self.set_flags_nzc(result, carry);
@@ -1435,7 +1453,7 @@ impl Board {
         let rd = data & 0x7;
         let rm = (data >> 3) & 0x7;
         let shift = data >> 6;
-        let (result, carry) = lsr_c(self.read_reg(rm), shift);
+        let (result, carry) = bits::lsr_c(self.read_reg(rm), shift);
         self.write_reg(rd, result);
         if !self.in_it_block() {
             self.set_flags_nzc(result, carry);
@@ -1447,7 +1465,7 @@ impl Board {
         let rdn = data & 0x7;
         let rm = data >> 3;
         let shift = self.read_reg(rm) & 0xFF;
-        let (result, carry) = lsr_c(self.read_reg(rdn), shift);
+        let (result, carry) = bits::lsr_c(self.read_reg(rdn), shift);
         self.write_reg(rdn, result);
         if !self.in_it_block() {
             self.set_flags_nzc(result, carry);
@@ -1578,6 +1596,45 @@ impl Board {
         self.write_reg(rd, result);
     }
 
+    fn n_rev16(&mut self, data: u32) {
+        // A7.7.114
+        let rd = data & 0x7;
+        let rm = data >> 3;
+        let result = self.read_reg(rm).rotate_left(16).swap_bytes();
+        self.write_reg(rd, result);
+    }
+
+    fn n_revsh(&mut self, data: u32) {
+        // A7.7.115
+        let rd = data & 0x7;
+        let rm = data >> 3;
+        let val = self.read_reg(rm);
+        let result = shifted_sign_extend(val, 7, 8) + ((val >> 8) & 0xFF);
+        self.write_reg(rd, result);
+    }
+
+    fn n_ror_reg(&mut self, data: u32) {
+        // A7.7.117
+        let rdn = data & 0x7;
+        let rm = data >> 3;
+        let shift = self.read_reg(rm) & 0xFF;
+        let (result, carry) = bits::ror_c(self.read_reg(rdn), shift);
+        self.write_reg(rdn, result);
+        if !self.in_it_block() {
+            self.set_flags_nzc(result, carry);
+        }
+    }
+
+    fn n_rsb_imm(&mut self, data: u32) {
+        let rd = data & 0x7;
+        let rn = data >> 3;
+        let (result, carry, overflow) = add_with_carry(!self.read_reg(rn), 0, 1);
+        self.write_reg(rd, result);
+        if !self.in_it_block() {
+            self.set_flags_nzcv(result, carry, overflow);
+        }
+    }
+
     fn w_rsb_imm(&mut self, data: u32, extra: u32) {
         let imm32 = data << 30 | extra;
         let rd = (data >> 4) & 0xF;
@@ -1585,6 +1642,17 @@ impl Board {
         let (result, carry, overflow) = add_with_carry(!self.read_reg(rn), imm32, 1);
         self.write_reg(rd, result);
         if bitset(data, 12) {
+            self.set_flags_nzcv(result, carry, overflow);
+        }
+    }
+
+    fn n_sbc_reg(&mut self, data: u32) {
+        // A7.7.125
+        let rdn = data & 0b111;
+        let rm = data >> 3;
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rdn), !self.read_reg(rm), self.cpu.carry());
+        self.write_reg(rdn, result);
+        if !self.in_it_block() {
             self.set_flags_nzcv(result, carry, overflow);
         }
     }
@@ -1620,6 +1688,7 @@ impl Board {
     }
 
     fn n_str_imm(&mut self, data: u32) {
+        // A7.7.161
         let imm32 = (data & 0xFF) << 2;
         let rt = (data >> 8) & 0xF;
         let rn = data >> 12;
@@ -1628,7 +1697,7 @@ impl Board {
     }
 
     fn w_str_imm(&mut self, data: u32, extra: u32) {
-        // A7.7.158
+        // A7.7.161
         let rt = data & 0xF;
         let rn = data >> 4;
         let rn_val = self.read_reg(rn);
@@ -1643,12 +1712,48 @@ impl Board {
     }
 
     fn n_str_reg(&mut self, data: u32) {
-        // A7.7.159
+        // A7.7.162
         let rt = data & 0b111;
         let rn = (data >> 3) & 0b111;
         let rm = data >> 6;
         let address = self.read_reg(rn).wrapping_add(self.read_reg(rm));
         self.memory.write_mem_u(address, 4, self.read_reg(rt)).unwrap();
+    }
+
+    fn n_strb_imm(&mut self, data: u32) {
+        // A7.7.163
+        let rt = data & 0x7;
+        let rn = (data >> 3) & 0x7;
+        let imm5 = data >> 6;
+        let address = self.read_reg(rn).wrapping_add(imm5);
+        self.memory.write_mem_u(address, 1, self.read_reg(rt)).unwrap();
+    }
+
+    fn n_strb_reg(&mut self, data: u32) {
+        // A7.7.164
+        let rt = data & 0x7;
+        let rn = (data >> 3) & 0x7;
+        let rm = data >> 6;
+        let address = self.read_reg(rn).wrapping_add(self.read_reg(rm));
+        self.memory.write_mem_u(address, 1, self.read_reg(rt)).unwrap();
+    }
+
+    fn n_strh_imm(&mut self, data: u32) {
+        // A7.7.170
+        let imm6 = data & 0x3F;
+        let rt = (data >> 3) & 0x7;
+        let rn = data >> 6;
+        let address = self.read_reg(rn).wrapping_add(imm6);
+        self.memory.write_mem_u(address, 2, self.read_reg(rt)).unwrap();
+    }
+
+    fn n_strh_reg(&mut self, data: u32) {
+        // A7.7.171
+        let rt = data & 0x7;
+        let rn = (data >> 3) & 0x7;
+        let rm = data >> 6;
+        let address = self.read_reg(rn).wrapping_add(self.read_reg(rm));
+        self.memory.write_mem_u(address, 2, self.read_reg(rt)).unwrap();
     }
 
     fn n_sub_imm(&mut self, data: u32) {
@@ -1674,8 +1779,20 @@ impl Board {
         }
     }
 
+    fn n_sub_reg(&mut self, data: u32) {
+        // A7.7.175
+        let rd = data & 0x7;
+        let rn = (data >> 3) & 0x7;
+        let rm = data >> 6;
+        let (result, carry, overflow) = add_with_carry(self.read_reg(rn), !self.read_reg(rm), 1);
+        self.write_reg(rd, result);
+        if self.in_it_block() {
+            self.set_flags_nzcv(result, carry, overflow);
+        }
+    }
+
     fn w_sub_reg(&mut self, data: u32, extra: u32) {
-        // A7.7.172
+        // A7.7.175
         let rd = data & 0xF;
         let rn = (data >> 4) & 0xF;
         let rm = (data >> 8) & 0xF;
@@ -1692,6 +1809,48 @@ impl Board {
         }
     }
 
+    fn n_sub_sp_imm(&mut self, data: u32) {
+        // A7.7.176
+        let imm9 = data;
+        let (result, _, _) = add_with_carry(self.read_sp(), !imm9, 1);
+        self.write_sp(result);
+    }
+
+    fn n_svc(&mut self, data: u32) {
+        // A7.7.178
+        // TODO: CallSupervisor()
+    }
+
+    fn n_sxtb(&mut self, data: u32) {
+        // A7.7.182
+        let rd = data & 0x7;
+        let rm = data >> 3;
+        let result = sign_extend(self.read_reg(rm), 7);
+        self.write_reg(rd, result);
+    }
+
+    fn n_sxth(&mut self, data: u32) {
+        // A7.7.184
+        let rd = data & 0x7;
+        let rm = data >> 3;
+        let result = sign_extend(self.read_reg(rm), 15);
+        self.write_reg(rd, result);
+    }
+
+    fn n_tst_reg(&mut self, data: u32) {
+        // A7.7.189
+        let rn = data & 0x7;
+        let rm = data >> 3;
+        let result = self.read_reg(rn) & self.read_reg(rm);
+        self.set_flags_nz(result);
+    }
+
+    fn n_udf(&mut self, data: u32) {
+        // A7.7.194
+        // TODO: throw UndefinedException
+        panic!("Undefined exception");
+    }
+
     fn w_udiv(&mut self, data: u32, extra: u32) {
         let rd = data & 0xF;
         let rn = data >> 4;
@@ -1706,6 +1865,22 @@ impl Board {
         } else {
             self.read_reg(rn) / m
         };
+        self.write_reg(rd, result);
+    }
+
+    fn n_uxtb(&mut self, data: u32) {
+        // A7.7.221
+        let rd = data & 0x7;
+        let rm = data >> 3;
+        let result = self.read_reg(rm) & 0xFF;
+        self.write_reg(rd, result);
+    }
+
+    fn n_uxth(&mut self, data: u32) {
+        // A7.7.223
+        let rd = data & 0x7;
+        let rm = data >> 3;
+        let result = self.read_reg(rm) & 0xFFFF;
         self.write_reg(rd, result);
     }
 

@@ -76,7 +76,7 @@ pub enum Opcode {
     StrReg, // N: blank[7]-rm[3]-rn[3]-rt[3]
     StrbImm, // N: blank[5]-imm5[5]-rn[3]-rt[3]
     StrbReg, // N: blank[7]-rm[3]-rn[3]-rt[3]
-    StrhImm, // N: blank[4]-rm[3]-rt[3]-imm6[6]
+    StrhImm, // N: blank[4]-rn[3]-rt[3]-imm6[6]
     StrhReg, // N: blank[7]-rm[3]-rn[3]-rt[3]
     SubImm, // N: blank[2]-rn[3]-rd[3]-imm8[8] / W: blank[3]-setflags[1]-rn[4]-rd[4]-spill[4] + modified[30]
     SubReg, // N: blank[7]-rm[3]-rn[3]-rd[3] / W: blank[3]-setflags[1]-rm[4]-rn[4]-rd[4] + blank[22]-shift_t[2]-shift_n[6]
