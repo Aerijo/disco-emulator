@@ -24,10 +24,7 @@ mod utils;
 use utils::bits::{self, bitset, add_with_carry, shift, shift_c, align, word_align, sign_extend, shifted_sign_extend};
 
 use goblin::elf::Elf;
-
-use std::env;
 use std::path::{PathBuf, Path};
-use std::ffi::{OsString};
 use std::hint::unreachable_unchecked;
 use std::collections::HashMap;
 use std::{fmt, fs, string::String, option::Option};
@@ -1937,68 +1934,72 @@ impl fmt::Display for Board {
     }
 }
 
-fn locate_elf_file() -> Option<std::path::PathBuf> {
-    let args: Vec<OsString> = env::args_os().collect();
-    if args.len() >= 2 {
-        return Some(PathBuf::from(args[1].clone()));
-    }
+// fn locate_elf_file() -> Option<std::path::PathBuf> {
+//     let args: Vec<OsString> = env::args_os().collect();
+//     if args.len() >= 2 {
+//         return Some(PathBuf::from(args[1].clone()));
+//     }
+//
+//     let mut project_kind: Option<String> = None;
+//     let working = std::env::current_dir().expect("cannot find or access working directory");
+//     for dir in working.read_dir().expect("cannot read working directory") {
+//         match dir {
+//             Ok(dir) => {
+//                 let file_name = dir.file_name();
+//                 if file_name == ".pio" || file_name == ".pioenvs" {
+//                     project_kind = Some(file_name.into_string().unwrap());
+//                     break;
+//                 }
+//             }
+//             Err(_) => {}
+//         }
+//     }
+//
+//     return match project_kind {
+//         Some(s) => {
+//             let elf_path: std::path::PathBuf = if s == ".pio" {
+//                 [".pio", "build", "disco_l476vg", "firmware.elf"].iter().collect()
+//             } else {
+//                 [".pioenvs", "disco_l476vg", "firmware.elf"].iter().collect()
+//             };
+//             Some(working.join(elf_path))
+//         }
+//         None => None
+//     }
+// }
 
-    let mut project_kind: Option<String> = None;
-    let working = std::env::current_dir().expect("cannot find or access working directory");
-    for dir in working.read_dir().expect("cannot read working directory") {
-        match dir {
-            Ok(dir) => {
-                let file_name = dir.file_name();
-                if file_name == ".pio" || file_name == ".pioenvs" {
-                    project_kind = Some(file_name.into_string().unwrap());
-                    break;
-                }
-            }
-            Err(_) => {}
-        }
-    }
+mod server;
+use server::start_server;
 
-    return match project_kind {
-        Some(s) => {
-            let elf_path: std::path::PathBuf = if s == ".pio" {
-                [".pio", "build", "disco_l476vg", "firmware.elf"].iter().collect()
-            } else {
-                [".pioenvs", "disco_l476vg", "firmware.elf"].iter().collect()
-            };
-            Some(working.join(elf_path))
-        }
-        None => None
-    }
-}
-
-use std::io::{stdin, stdout, Read};
 fn main() {
-    let path = match locate_elf_file() {
-        Some(p) => p,
-        None => {
-            println!("Cannot detect ELF file");
-            return;
-        }
-    };
+    start_server();
 
-    let mut board = Board::new();
-    board.load_elf_from_path(&path).unwrap();
-    println!("\n{}\n", board);
-    println!("finished init");
-    board.spawn_audio();
 
-    let mut stdin = io::stdin();
-    let mut stdout = io::stdout();
-
-    // while board.cpu.read_instruction_pc() != 0x080f2f60 {
+    // let path = match locate_elf_file() {
+    //     Some(p) => p,
+    //     None => {
+    //         println!("Cannot detect ELF file");
+    //         return;
+    //     }
+    // };
+    //
+    // let mut board = Board::new();
+    // board.load_elf_from_path(&path).unwrap();
+    // println!("\n{}\n", board);
+    // println!("finished init");
+    // board.spawn_audio();
+    //
+    //
+    //
+    // // while board.cpu.read_instruction_pc() != 0x080f2f60 {
+    // //     board.step().unwrap();
+    // // }
+    //
+    // loop {
     //     board.step().unwrap();
+    //     println!("\n{}\n", board);
+    //     write!(stdout, "Press enter to continue...").unwrap();
+    //     stdout.flush().unwrap();
+    //     let _ = stdin.read(&mut [0u8]).unwrap();
     // }
-
-    loop {
-        board.step().unwrap();
-        println!("\n{}\n", board);
-        write!(stdout, "Press enter to continue...").unwrap();
-        stdout.flush().unwrap();
-        let _ = stdin.read(&mut [0u8]).unwrap();
-    }
 }
