@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::vec::Vec;
 use std::io::Write;
+use std::str;
 
 extern crate hex;
 
@@ -20,6 +21,22 @@ impl Packet {
             checksum: checksum,
         };
     }
+}
+
+pub fn hex_to_word(hex: &[u8]) -> Result<u32, ()> {
+    let s = match str::from_utf8(hex) {
+        Ok(s) => s,
+        Err(_) => return Err(()),
+    };
+
+    match u32::from_str_radix(s, 16) {
+        Ok(u) => Ok(u),
+        Err(_) => Err(()),
+    }
+}
+
+pub fn word_to_hex(word: u32) -> String {
+    return format!("{:08x}", word);
 }
 
 fn read_checksum(check: &[u8]) -> Result<u8, hex::FromHexError> {

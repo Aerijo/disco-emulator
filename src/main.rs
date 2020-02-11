@@ -383,7 +383,7 @@ impl MemoryBus {
 }
 
 #[derive(Debug)]
-struct Board {
+pub struct Board {
     tick: u128,
     audio_handler: AudioHandler,
     instruction_cache: InstructionCache,
@@ -644,6 +644,19 @@ impl Board {
 
     fn print_mem_dump(&mut self, index: u32, length: usize) {
         self.memory.print_mem_dump(index, length);
+    }
+
+    fn read_memory_region(&self, start: u32, bytes: u32) -> Result<Vec<u8>, String> {
+        let mut out = Vec::new();
+        for i in start..(start + bytes) {
+            match self.memory.read_byte(i) {
+                Ok(i) => out.push(i),
+                Err(_) => {
+                    return Ok(out);
+                }
+            };
+        }
+        return Ok(out);
     }
 
     fn print_mem_area(&mut self, address: u32) {
@@ -1973,7 +1986,6 @@ use server::start_server;
 
 fn main() {
     start_server();
-
 
     // let path = match locate_elf_file() {
     //     Some(p) => p,
